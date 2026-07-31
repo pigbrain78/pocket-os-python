@@ -1,0 +1,174 @@
+{
+  "app_name": "Pocket OS",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A clinical, high-contrast, Apple Health-inspired cognitive operating system where vibrant data metrics pop against pristine white space.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#000000",
+    "surfaceSecondary": "#F2F2F7",
+    "onSurfaceSecondary": "#1C1C1E",
+    "surfaceTertiary": "#E5E5EA",
+    "onSurfaceTertiary": "#3A3A3C",
+    "surfaceInverse": "#000000",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#000000",
+    "brandPrimary": "#000000",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#3A3A3C",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#E5E5EA",
+    "onBrandTertiary": "#000000",
+    "success": "#34C759",
+    "onSuccess": "#FFFFFF",
+    "warning": "#FFCC00",
+    "onWarning": "#000000",
+    "error": "#FF3B30",
+    "onError": "#FFFFFF",
+    "info": "#00C7BE",
+    "onInfo": "#FFFFFF",
+    "border": "#E5E5EA",
+    "borderStrong": "#C7C7CC",
+    "divider": "#E5E5EA",
+    "agentResearch": "#34C759",
+    "agentArchitect": "#FFCC00",
+    "agentCritic": "#FF3B30",
+    "agentPlanner": "#8A9A5B",
+    "agentDocSteward": "#00C7BE"
+  },
+  "typography": {
+    "displayFontFamily": "Geist",
+    "textFontFamily": "Geist",
+    "monoFontFamily": "Space Grotesk",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24,
+      "3xl": 48
+    }
+  },
+  "spacing": {
+    "rule": "Generous Apple-native whitespace. Large margins around distinct cards. Health rings demand breathing room, never cluster them tightly.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use heavy frosted glass on the bottom tab bar.",
+      "Apply subtle glass on sticky headers when scrolling through the Cognitive Timeline.",
+      "Use glass effect behind floating actions like 'New Capture'."
+    ],
+    "dont's": [
+      "Do not apply glass to individual timeline cards.",
+      "Do not use glass inside the Knowledge Graph canvas (keep nodes solid)."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Timeline",
+      "purpose": "Chronological life-replay of cognitive captures, acting as the app's home.",
+      "states": {
+        "loading": "Centered sleek spinner.",
+        "empty": "Clean workspace image with a subtle 'Log your first thought' CTA.",
+        "error": "Minimal text 'Unable to sync timeline' with a retry button."
+      },
+      "layout": "Sticky large title 'Timeline'. Scrollable list of 'TimelineEvent' cards. Each card uses surfaceSecondary with md radius, displaying time, concise text, and a GravityScore badge. Floating 'Add Note' pill button anchored bottom-right above the glass tab bar."
+    },
+    {
+      "name": "Graph",
+      "purpose": "Living Knowledge Graph with animated nodes and thumb-zone navigation.",
+      "states": {
+        "loading": "Pulsing single central node.",
+        "empty": "Abstract geometry image suggesting unconnected dots.",
+        "error": "Simple reload prompt."
+      },
+      "layout": "Full-screen interactive canvas. Black or ultra-dark canvas inverse for maximum contrast if preferred, OR stark white with stark black nodes. Bottom sheet (glass) overlapping the canvas for node details/filters. Pan/zoom via gestures."
+    },
+    {
+      "name": "Note Detail",
+      "purpose": "Deep dive into a concept, showing its Idea Evolution, AI Council responses, and Gravity Score.",
+      "states": {
+        "loading": "Skeleton text lines.",
+        "empty": "N/A - Accessed via existing note.",
+        "error": "Error loading note details."
+      },
+      "layout": "Scrollable view. Top section: Core note text (large Geist text). Below: 'Memory Gravity' metric (large mono font). Middle: Horizontal scroll of 'AgentResponse' cards (colored by agent). Bottom: 'Decision DNA' lineage (vertical stepped timeline)."
+    },
+    {
+      "name": "Memory Health",
+      "purpose": "Apple-Health-like dashboard for knowledge quality, density, and duplicate risk.",
+      "states": {
+        "loading": "Faded, unfilled rings.",
+        "empty": "Zeroed rings with prompt to capture more.",
+        "error": "Data sync error state."
+      },
+      "layout": "Grid of cards. Top hero card: Large concentric 'HealthRings' (using the agent colors for distinct metrics). Below: 2-column grid of single-metric cards (e.g., Doc Freshness, Unlinked Knowledge). Use 'Space Grotesk' for big numbers. High contrast, clean layout."
+    },
+    {
+      "name": "Genome (Cognitive Twin)",
+      "purpose": "AI reasoning hub that predicts next actions based on user history and ROI.",
+      "states": {
+        "loading": "Soft pulsing text 'Analyzing patterns...'",
+        "empty": "Illustration of an empty mind map.",
+        "error": "Failed to load twin prediction."
+      },
+      "layout": "Centered layout with generous padding. Large text predicting 'What you would probably do next'. Knowledge ROI listed as neat, flat rows with clear success/revenue metrics."
+    }
+  ],
+  "images": {
+    "timeline_empty": {
+      "url": "https://images.pexels.com/photos/1128207/pexels-photo-1128207.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Clean minimalist workspace desk"
+    },
+    "graph_empty": {
+      "url": "https://images.pexels.com/photos/12732218/pexels-photo-12732218.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Abstract white geometric shapes"
+    },
+    "agent_avatar_research": {
+      "url": "https://images.unsplash.com/photo-1627161683077-e34782c24d81?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTV8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdHxlbnwwfHx8fDE3ODU1NDA1NDl8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Professional headshot for Research Agent"
+    },
+    "agent_avatar_architect": {
+      "url": "https://images.unsplash.com/photo-1560250097-0b93528c311a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTV8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdHxlbnwwfHx8fDE3ODU1NDA1NDl8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Professional headshot for Architect Agent"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the 'Apple Health-like' clinical aesthetic: Use pristine white space (#FFFFFF) heavily, contrasting with vibrant, specific accent colors assigned to the 5 AI agents.",
+    "Implement the 'HealthRing' component using React Native Reanimated/Skia to ensure smooth fill animations upon mounting.",
+    "For the Memory Health Dashboard, ensure large metric numbers use the 'monoFontFamily' (Space Grotesk or similar system mono) to emphasize data, surrounded by generous 'xl' and '2xl' padding.",
+    "The Knowledge Graph screen should use pan/zoom gesture handlers. Keep navigation in the thumb-zone by using a translucent bottom sheet for node details rather than full-screen modals.",
+    "Ensure 'Decision DNA' and 'Idea Evolution' lineage visualizers use strict vertical lines (1pt or 2pt width) connecting nodes, resembling Git-commit histories but styled cleanly without clutter.",
+    "Always apply frosted glass (expo-blur or expo-glass-effect) to the bottom tab bar and sticky headers to provide depth.",
+    "Do not use banned colors (indigo, blue, purple) as requested by the global persona. Use the specific custom tokens (agentResearch, agentArchitect, etc.) defined in the color palette.",
+    "Ensure all primary 'Add Note' or interactive CTA buttons sit above the safe area or tab bar so they are easily reachable."
+  ]
+}
