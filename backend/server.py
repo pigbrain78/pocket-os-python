@@ -585,6 +585,355 @@ async def list_operations(note_id: str, user=Depends(get_current_user)):
     ops = await db.operations.find({"note_id": note_id, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(30)
     return ops
 
+# ---------------- Governance Layer ----------------
+CAPABILITY_KEYWORDS = {
+    "memory.read": ["memory", "recall", "read", "retrieve", "context"],
+    "memory.write": ["store", "save", "commit", "persist", "capture"],
+    "graph.read": ["graph", "traverse", "network", "connections", "neighbors"],
+    "graph.write": ["link", "connect", "edge", "relate"],
+    "ledger.append": ["decision", "record", "log", "provenance", "audit"],
+    "council.review": ["council", "review", "critic", "architect", "planner"],
+    "twin.reason": ["reason", "predict", "shadow", "twin"],
+    "operations.summarize": ["summarize", "condense", "brief"],
+    "operations.generate": ["generate", "produce", "create", "sop"],
+    "operations.refactor": ["refactor", "rewrite", "clean"],
+    "filesystem.read": ["file", "read", "fetch"],
+    "network.egress": ["http", "url", "fetch", "api", "network"],
+}
+
+BUILTIN_AGENTS = [
+    {
+        "name": "Research Agent", "author": "Pocket OS Core",
+        "manifest": "Cite supporting evidence and prior work for any note. Reads memory and graph. Never writes.",
+        "capabilities": ["memory.read", "graph.read", "council.review"],
+        "risk": "low",
+    },
+    {
+        "name": "Architect Agent", "author": "Pocket OS Core",
+        "manifest": "Explain how ideas affect the user's system architecture. Traverses the graph. Never writes.",
+        "capabilities": ["memory.read", "graph.read", "council.review"],
+        "risk": "low",
+    },
+    {
+        "name": "Critic Agent", "author": "Pocket OS Core",
+        "manifest": "Expose weak assumptions and risks. Reads memory. Never writes.",
+        "capabilities": ["memory.read", "council.review"],
+        "risk": "low",
+    },
+    {
+        "name": "Planner Agent", "author": "Pocket OS Core",
+        "manifest": "Propose next milestones and concrete actions. Reads memory and graph.",
+        "capabilities": ["memory.read", "graph.read", "council.review", "operations.generate"],
+        "risk": "medium",
+    },
+    {
+        "name": "Documentation Steward", "author": "Pocket OS Core",
+        "manifest": "Reorganize and document knowledge. Reads memory, writes back canonical structure.",
+        "capabilities": ["memory.read", "memory.write", "operations.refactor", "ledger.append"],
+        "risk": "high",
+    },
+]
+
+class AgentSubmit(BaseModel):
+    name: str
+    author: Optional[str] = "Community"
+    manifest: str
+
+class LeaseIn(BaseModel):
+    capabilities: List[str]
+    scope: str = "workspace"
+    expires_in_days: int = 30
+
+class ExecutionIn(BaseModel):
+    action: str
+    note_id: Optional[str] = None
+    capability: str
+
+def extract_capabilities(text: str) -> List[str]:
+    t = text.lower()
+    hits = []
+    for cap, kws in CAPABILITY_KEYWORDS.items():
+        if any(k in t for k in kws):
+            hits.append(cap)
+    return hits[:8] or ["memory.read"]
+
+def compute_trust(agent: Dict) -> int:
+    caps = agent.get("capabilities", [])
+    write_caps = sum(1 for c in caps if "write" in c or "ledger" in c or "network" in c)
+    risk_penalty = {"low": 0, "medium": 15, "high": 30}.get(agent.get("risk", "medium"), 15)
+    base = 90 - write_caps * 5 - risk_penalty
+    executions = agent.get("stats", {}).get("successful", 0)
+    reversed_ = agent.get("stats", {}).get("reversed", 0)
+    delta = min(15, executions * 2) - reversed_ * 8
+    return max(20, min(99, base + delta))
+
+async def ensure_builtin_agents(user_id: str):
+    existing = await db.agents.count_documents({"user_id": user_id})
+    if existing > 0:
+        return
+    for spec in BUILTIN_AGENTS:
+        aid = uid()
+        agent = {
+            "id": aid,
+            "user_id": user_id,
+            "name": spec["name"],
+            "author": spec["author"],
+            "version": "1.0.0",
+            "lineage_id": aid,
+            "manifest": spec["manifest"],
+            "capabilities": spec["capabilities"],
+            "risk": spec["risk"],
+            "public_key": "pk_" + uid()[:24],
+            "status": "registered",  # submitted -> analyzing -> scored -> registered
+            "trust_score": 0,
+            "stats": {"successful": 0, "reversed": 0, "proposed": 0},
+            "created_at": now_iso(),
+        }
+        agent["trust_score"] = compute_trust(agent)
+        await db.agents.insert_one(agent)
+        # Issue an initial lease for the built-in caps
+        lease = {
+            "id": uid(),
+            "user_id": user_id,
+            "agent_id": aid,
+            "capabilities": spec["capabilities"],
+            "scope": "workspace",
+            "status": "active",
+            "issued_at": now_iso(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
+            "revoked_at": None,
+            "issued_by": "constitutional",
+        }
+        await db.leases.insert_one(lease)
+        contract = {
+            "id": uid(),
+            "user_id": user_id,
+            "agent_id": aid,
+            "name": f"Default Contract — {spec['name']}",
+            "policies": [
+                {"rule": "sandbox.workspace_only", "enforced": True},
+                {"rule": "no_network_egress", "enforced": "network.egress" not in spec["capabilities"]},
+                {"rule": "human_approval_required", "enforced": spec["risk"] == "high"},
+            ],
+            "created_at": now_iso(),
+        }
+        await db.governance_contracts.insert_one(contract)
+
+@api.get("/governance/summary")
+async def governance_summary(user=Depends(get_current_user)):
+    await ensure_builtin_agents(user["id"])
+    agents = await db.agents.count_documents({"user_id": user["id"]})
+    active_leases = await db.leases.count_documents({"user_id": user["id"], "status": "active"})
+    pending = await db.executions.count_documents({"user_id": user["id"], "state": "PROPOSED"})
+    executed = await db.executions.count_documents({"user_id": user["id"], "state": "EXECUTED"})
+    reversed_ct = await db.executions.count_documents({"user_id": user["id"], "state": "REVERSED"})
+    contracts = await db.governance_contracts.count_documents({"user_id": user["id"]})
+    return {
+        "agents": agents,
+        "active_leases": active_leases,
+        "pending_approvals": pending,
+        "executed": executed,
+        "reversed": reversed_ct,
+        "contracts": contracts,
+    }
+
+@api.get("/agents")
+async def list_agents(user=Depends(get_current_user)):
+    await ensure_builtin_agents(user["id"])
+    agents = await db.agents.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return agents
+
+@api.get("/agents/{aid}")
+async def get_agent(aid: str, user=Depends(get_current_user)):
+    a = await db.agents.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Not found")
+    leases = await db.leases.find({"agent_id": aid, "user_id": user["id"]}, {"_id": 0}).sort("issued_at", -1).to_list(50)
+    contracts = await db.governance_contracts.find({"agent_id": aid, "user_id": user["id"]}, {"_id": 0}).to_list(20)
+    executions = await db.executions.find({"agent_id": aid, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return {"agent": a, "leases": leases, "contracts": contracts, "executions": executions}
+
+@api.post("/agents/submit")
+async def submit_agent(inp: AgentSubmit, user=Depends(get_current_user)):
+    """Marketplace admission pipeline: submit -> static analysis -> capability extraction -> policy validation -> trust scoring -> registered."""
+    aid = uid()
+    pipeline = []
+
+    # Step 1: Submission
+    pipeline.append({"step": "Submission", "status": "ok", "detail": f"Received manifest from {inp.author}."})
+
+    # Step 2: Static analysis (concept extraction as a proxy)
+    concepts = await extract_concepts(inp.manifest)
+    pipeline.append({"step": "Static Analysis", "status": "ok", "detail": f"Extracted {len(concepts)} concepts."})
+
+    # Step 3: Capability extraction
+    caps = extract_capabilities(inp.manifest)
+    pipeline.append({"step": "Capability Extraction", "status": "ok", "detail": f"Declared capabilities: {', '.join(caps)}"})
+
+    # Step 4: Policy validation
+    risk = "high" if any("write" in c or "ledger" in c or "network" in c for c in caps) else ("medium" if len(caps) >= 4 else "low")
+    violations = []
+    if "network.egress" in caps and risk == "high":
+        violations.append("Network egress requires additional human approval.")
+    pipeline.append({"step": "Policy Validation", "status": "warning" if violations else "ok", "detail": violations[0] if violations else "No policy violations."})
+
+    # Step 5: Sandbox assignment
+    pipeline.append({"step": "Sandbox Assignment", "status": "ok", "detail": f"Assigned workspace sandbox. Risk={risk}."})
+
+    agent = {
+        "id": aid,
+        "user_id": user["id"],
+        "name": inp.name,
+        "author": inp.author or "Community",
+        "version": "1.0.0",
+        "lineage_id": aid,
+        "manifest": inp.manifest,
+        "capabilities": caps,
+        "concepts": concepts,
+        "risk": risk,
+        "public_key": "pk_" + uid()[:24],
+        "status": "registered",
+        "trust_score": 0,
+        "stats": {"successful": 0, "reversed": 0, "proposed": 0},
+        "created_at": now_iso(),
+    }
+    agent["trust_score"] = compute_trust(agent)
+    pipeline.append({"step": "Trust Scoring", "status": "ok", "detail": f"Trust score computed: {agent['trust_score']}."})
+
+    # Step 6: Registration
+    await db.agents.insert_one(agent)
+    agent.pop("_id", None)
+
+    # Auto-issue default lease for low-risk agents; require human approval for high
+    if risk != "high":
+        lease = {
+            "id": uid(), "user_id": user["id"], "agent_id": aid,
+            "capabilities": caps, "scope": "workspace", "status": "active",
+            "issued_at": now_iso(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "revoked_at": None, "issued_by": "auto",
+        }
+        await db.leases.insert_one(lease)
+        pipeline.append({"step": "Marketplace Registration", "status": "ok", "detail": "Registered + default lease issued."})
+    else:
+        pipeline.append({"step": "Marketplace Registration", "status": "warning", "detail": "Registered. High-risk lease requires human approval."})
+
+    await log_event(user["id"], "agent_submitted", f"Submitted agent: {inp.name}", ref_id=aid, meta={"risk": risk, "trust": agent["trust_score"]})
+    return {"agent": agent, "pipeline": pipeline}
+
+@api.post("/agents/{aid}/leases")
+async def issue_lease(aid: str, inp: LeaseIn, user=Depends(get_current_user)):
+    a = await db.agents.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Not found")
+    invalid = [c for c in inp.capabilities if c not in a["capabilities"]]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Agent lacks capabilities: {', '.join(invalid)}")
+    lease = {
+        "id": uid(), "user_id": user["id"], "agent_id": aid,
+        "capabilities": inp.capabilities, "scope": inp.scope, "status": "active",
+        "issued_at": now_iso(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=inp.expires_in_days)).isoformat(),
+        "revoked_at": None, "issued_by": "constitutional",
+    }
+    await db.leases.insert_one(lease)
+    lease.pop("_id", None)
+    await log_event(user["id"], "lease_issued", f"Lease issued: {a['name']}", ref_id=aid, meta={"capabilities": inp.capabilities})
+    return lease
+
+@api.post("/leases/{lid}/revoke")
+async def revoke_lease(lid: str, user=Depends(get_current_user)):
+    lease = await db.leases.find_one({"id": lid, "user_id": user["id"]}, {"_id": 0})
+    if not lease:
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.leases.update_one({"id": lid}, {"$set": {"status": "revoked", "revoked_at": now_iso()}})
+    agent = await db.agents.find_one({"id": lease["agent_id"]}, {"_id": 0}) or {}
+    await log_event(user["id"], "lease_revoked", f"Lease revoked: {agent.get('name','agent')}", ref_id=lease["agent_id"])
+    return {"status": "revoked", "lease_id": lid}
+
+@api.post("/agents/{aid}/executions")
+async def propose_execution(aid: str, inp: ExecutionIn, user=Depends(get_current_user)):
+    a = await db.agents.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Find active lease covering this capability
+    lease = await db.leases.find_one({
+        "agent_id": aid, "user_id": user["id"], "status": "active",
+        "capabilities": inp.capability,
+    }, {"_id": 0})
+    if not lease:
+        raise HTTPException(status_code=403, detail=f"No active lease covers capability '{inp.capability}'.")
+    contract = await db.governance_contracts.find_one({"agent_id": aid, "user_id": user["id"]}, {"_id": 0})
+    # High-risk agents require human approval; others go straight to APPROVED
+    initial_state = "PROPOSED" if a.get("risk") == "high" else "APPROVED"
+    ex = {
+        "id": uid(), "user_id": user["id"], "agent_id": aid,
+        "lease_id": lease["id"], "contract_id": contract["id"] if contract else None,
+        "action": inp.action, "capability": inp.capability, "note_id": inp.note_id,
+        "state": initial_state, "state_history": [
+            {"state": "PROPOSED", "at": now_iso()},
+        ],
+        "evidence": None, "created_at": now_iso(),
+    }
+    if initial_state == "APPROVED":
+        ex["state_history"].append({"state": "APPROVED", "at": now_iso(), "by": "auto-policy"})
+    await db.executions.insert_one(ex)
+    ex.pop("_id", None)
+    await db.agents.update_one({"id": aid}, {"$inc": {"stats.proposed": 1}})
+    await log_event(user["id"], "execution_proposed", f"{a['name']} proposed: {inp.action}", ref_id=aid, meta={"state": initial_state})
+    return ex
+
+@api.post("/executions/{eid}/approve")
+async def approve_execution(eid: str, user=Depends(get_current_user)):
+    ex = await db.executions.find_one({"id": eid, "user_id": user["id"]}, {"_id": 0})
+    if not ex:
+        raise HTTPException(status_code=404, detail="Not found")
+    if ex["state"] not in ("PROPOSED", "APPROVED"):
+        raise HTTPException(status_code=400, detail=f"Cannot execute from state {ex['state']}")
+    # Move to EXECUTED with mock evidence
+    hist = ex.get("state_history", [])
+    if ex["state"] == "PROPOSED":
+        hist.append({"state": "APPROVED", "at": now_iso(), "by": "human"})
+    hist.append({"state": "EXECUTED", "at": now_iso(), "by": "runtime"})
+    evidence = {"outcome": "success", "hash": "0x" + uid().replace("-", "")[:16], "sealed_at": now_iso()}
+    await db.executions.update_one({"id": eid}, {"$set": {"state": "EXECUTED", "state_history": hist, "evidence": evidence}})
+    await db.agents.update_one({"id": ex["agent_id"]}, {"$inc": {"stats.successful": 1}})
+    # Recompute trust
+    ag = await db.agents.find_one({"id": ex["agent_id"]}, {"_id": 0})
+    if ag:
+        await db.agents.update_one({"id": ex["agent_id"]}, {"$set": {"trust_score": compute_trust(ag)}})
+    await log_event(user["id"], "execution_executed", f"Execution sealed: {ex['action']}", ref_id=ex["agent_id"])
+    return {"status": "EXECUTED", "evidence": evidence}
+
+@api.post("/executions/{eid}/reverse")
+async def reverse_execution(eid: str, user=Depends(get_current_user)):
+    ex = await db.executions.find_one({"id": eid, "user_id": user["id"]}, {"_id": 0})
+    if not ex:
+        raise HTTPException(status_code=404, detail="Not found")
+    if ex["state"] != "EXECUTED":
+        raise HTTPException(status_code=400, detail="Only EXECUTED actions can be reversed")
+    hist = ex.get("state_history", [])
+    hist.append({"state": "REVERSED", "at": now_iso(), "by": "human"})
+    await db.executions.update_one({"id": eid}, {"$set": {"state": "REVERSED", "state_history": hist}})
+    await db.agents.update_one({"id": ex["agent_id"]}, {"$inc": {"stats.successful": -1, "stats.reversed": 1}})
+    ag = await db.agents.find_one({"id": ex["agent_id"]}, {"_id": 0})
+    if ag:
+        await db.agents.update_one({"id": ex["agent_id"]}, {"$set": {"trust_score": compute_trust(ag)}})
+    await log_event(user["id"], "execution_reversed", f"Execution reversed: {ex['action']}", ref_id=ex["agent_id"])
+    return {"status": "REVERSED"}
+
+@api.get("/executions/pending")
+async def pending_executions(user=Depends(get_current_user)):
+    pend = await db.executions.find({"user_id": user["id"], "state": "PROPOSED"}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    # Attach agent info
+    out = []
+    for e in pend:
+        a = await db.agents.find_one({"id": e["agent_id"]}, {"_id": 0}) or {}
+        e["agent_name"] = a.get("name", "Unknown")
+        e["agent_risk"] = a.get("risk", "medium")
+        out.append(e)
+    return out
+
 # ---------------- Opportunity Engine ----------------
 @api.get("/opportunities")
 async def opportunities(user=Depends(get_current_user)):

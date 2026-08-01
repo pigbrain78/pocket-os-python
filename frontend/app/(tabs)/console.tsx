@@ -187,6 +187,15 @@ export default function ConsoleScreen() {
           <Ionicons name="add-circle" size={22} color="#fff" />
           <Text style={styles.newCtaT}>New Capture</Text>
         </Pressable>
+
+        <Pressable style={styles.govCta} onPress={() => router.push("/governance")} testID="open-governance-btn">
+          <View style={{ flex: 1 }}>
+            <Text style={styles.govLab}>Constitutional Layer</Text>
+            <Text style={styles.govTitle}>Governance</Text>
+            <Text style={styles.govSub}>Agents · Leases · Contracts · Approvals</Text>
+          </View>
+          <Ionicons name="shield-checkmark-outline" size={28} color={colors.onSurface} />
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -234,4 +243,8 @@ const styles = StyleSheet.create({
   compoundVal: { color: colors.success, fontSize: fs.xl, fontWeight: "800" },
   newCta: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.onSurface, padding: spacing.lg, borderRadius: radius.md, marginTop: spacing.xl },
   newCtaT: { color: "#fff", fontSize: fs.lg, fontWeight: "700" },
+  govCta: { flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: colors.surfaceSecondary, padding: spacing.lg, borderRadius: radius.md, marginTop: spacing.md, borderWidth: 1, borderColor: colors.border },
+  govLab: { fontSize: 10, color: colors.muted, letterSpacing: 1.2, fontWeight: "700" },
+  govTitle: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  govSub: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
 });
