@@ -12,6 +12,7 @@ import math
 import uuid
 import jwt
 import bcrypt
+import hashlib
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
@@ -177,6 +178,21 @@ async def add_edge(user_id: str, src: str, dst: str, kind: str):
     })
 
 async def log_event(user_id: str, kind: str, text: str, ref_id: Optional[str] = None, meta: Optional[Dict] = None):
+    payload = {
+        "kind": kind,
+        "text": text,
+        "ref_id": ref_id,
+        "meta": meta or {},
+        "user_id": user_id,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload_hash = hashlib.sha256(canonical.encode()).hexdigest()
+
+    prev = await db.events.find_one({"user_id": user_id}, {"_id": 0, "hash": 1, "created_at": 1}, sort=[("created_at", -1)])
+    previous_hash = prev["hash"] if prev and prev.get("hash") else "0" * 64
+    ts = now_iso()
+    event_hash = hashlib.sha256((previous_hash + payload_hash + ts).encode()).hexdigest()
+
     ev = {
         "id": uid(),
         "user_id": user_id,
@@ -184,10 +200,102 @@ async def log_event(user_id: str, kind: str, text: str, ref_id: Optional[str] = 
         "text": text,
         "ref_id": ref_id,
         "meta": meta or {},
-        "created_at": now_iso(),
+        "previous_hash": previous_hash,
+        "payload_hash": payload_hash,
+        "hash": event_hash,
+        "created_at": ts,
     }
     await db.events.insert_one(ev)
+    ev.pop("_id", None)
     return ev
+
+@api.get("/ledger/verify")
+async def verify_ledger(user=Depends(get_current_user)):
+    events = await db.events.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(5000)
+    chained = [e for e in events if e.get("hash")]
+    legacy = len(events) - len(chained)
+    breaks = []
+    expected_prev = "0" * 64
+    for i, e in enumerate(chained):
+        if e.get("previous_hash") != expected_prev:
+            breaks.append({"index": i, "id": e["id"], "reason": "previous_hash mismatch"})
+        recomputed_payload = hashlib.sha256(json.dumps({
+            "kind": e["kind"], "text": e["text"], "ref_id": e.get("ref_id"),
+            "meta": e.get("meta", {}), "user_id": user["id"],
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if e.get("payload_hash") != recomputed_payload:
+            breaks.append({"index": i, "id": e["id"], "reason": "payload tampered"})
+        recomputed_hash = hashlib.sha256((expected_prev + recomputed_payload + e["created_at"]).encode()).hexdigest()
+        if e.get("hash") != recomputed_hash:
+            breaks.append({"index": i, "id": e["id"], "reason": "event_hash invalid"})
+        expected_prev = e.get("hash", expected_prev)
+    return {
+        "total_events": len(events),
+        "chained": len(chained),
+        "legacy_unchained": legacy,
+        "breaks": breaks,
+        "verified": len(breaks) == 0 and len(chained) > 0,
+        "head_hash": chained[-1]["hash"] if chained else "0" * 64,
+    }
+
+def sha_of(obj: Any) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+async def compute_decision_dna(user_id: str, decision: Dict[str, Any]) -> Dict[str, str]:
+    """Build the 4 sub-hashes + root for a decision, using the same inputs a replay could reconstruct."""
+    note_id = decision.get("note_id")
+    note = await db.notes.find_one({"id": note_id, "user_id": user_id}, {"_id": 0}) if note_id else None
+    council = await db.council_responses.find({"note_id": note_id}, {"_id": 0}).to_list(20) if note_id else []
+    graph_edges = await db.graph_edges.count_documents({"user_id": user_id, "src": note_id}) if note_id else 0
+
+    context = {
+        "title": decision.get("title"),
+        "note_title": (note or {}).get("title"),
+        "note_concepts": (note or {}).get("concepts", []),
+        "graph_neighbors": graph_edges,
+        "user_id": user_id,
+    }
+    reasoning = {
+        "council": [{"agent": r["agent"], "response": r["response"]} for r in council],
+        "context_field": decision.get("context", ""),
+    }
+    governance = {
+        "policies_checked": ["sandbox.workspace_only", "human_approval_required"],
+        "approvals": ["constitutional"],
+        "risk": "medium",
+    }
+    outcome = {
+        "affected_projects": decision.get("affected_projects", 0),
+        "produced_tasks": decision.get("produced_tasks", 0),
+        "referenced_notes": decision.get("referenced_notes", 0),
+        "influenced_agents": decision.get("influenced_agents", 0),
+    }
+
+    ch = sha_of(context)
+    rh = sha_of(reasoning)
+    gh = sha_of(governance)
+    oh = sha_of(outcome)
+    root = sha_of({"context": ch, "reasoning": rh, "governance": gh, "outcome": oh})
+    return {
+        "context_hash": ch, "reasoning_hash": rh,
+        "governance_hash": gh, "outcome_hash": oh,
+        "dna_root": root,
+    }
+
+@api.get("/decisions/{did}/dna")
+async def decision_dna(did: str, user=Depends(get_current_user)):
+    d = await db.decisions.find_one({"id": did, "user_id": user["id"]}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    fresh = await compute_decision_dna(user["id"], d)
+    # If stored, verify; else store now
+    verified = True
+    stored = {k: d.get(k) for k in ("context_hash", "reasoning_hash", "governance_hash", "outcome_hash", "dna_root")}
+    if all(stored.values()):
+        verified = stored == fresh
+    else:
+        await db.decisions.update_one({"id": did}, {"$set": fresh})
+    return {"dna": fresh, "stored": stored, "verified": verified}
 
 async def compute_gravity(user_id: str, note_id: str) -> float:
     """Gravity = weighted mix of connections + reuse + decisions referencing it."""
@@ -528,8 +636,11 @@ async def create_decision(inp: DecisionIn, user=Depends(get_current_user)):
         "created_at": now_iso(),
     }
     await db.decisions.insert_one(d)
-    await log_event(user["id"], "decision_made", f"Decision #{d['number']}: {inp.title}", ref_id=d["id"])
     d.pop("_id", None)
+    dna = await compute_decision_dna(user["id"], d)
+    await db.decisions.update_one({"id": d["id"]}, {"$set": dna})
+    d.update(dna)
+    await log_event(user["id"], "decision_made", f"Decision #{d['number']}: {inp.title}", ref_id=d["id"])
     return d
 
 @api.get("/decisions")

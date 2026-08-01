@@ -30,6 +30,7 @@ export default function ConsoleScreen() {
   const [data, setData] = useState<Console | null>(null);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [opps, setOpps] = useState<Opp[]>([]);
+  const [ledger, setLedger] = useState<Ledger | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
 
@@ -205,6 +206,25 @@ export default function ConsoleScreen() {
           </View>
           <Ionicons name="chatbubbles-outline" size={28} color={colors.onSurface} />
         </Pressable>
+
+        {ledger ? (
+          <View style={styles.ledger} testID="ledger-card">
+            <View style={styles.ledgerHead}>
+              <View style={styles.ledgerDot} />
+              <Text style={styles.ledgerLab}>CRYPTOGRAPHIC LEDGER</Text>
+              <View style={{ flex: 1 }} />
+              <View style={[styles.verifyPill, { backgroundColor: ledger.verified ? "#DCF7DC" : "#FFE9E7" }]}>
+                <Ionicons name={ledger.verified ? "shield-checkmark" : "warning"} size={12} color={ledger.verified ? "#0E7A2A" : "#B41B10"} />
+                <Text style={[styles.verifyT, { color: ledger.verified ? "#0E7A2A" : "#B41B10" }]}>{ledger.verified ? "Verified" : "Broken"}</Text>
+              </View>
+            </View>
+            <Text style={styles.ledgerHead2}>Head hash</Text>
+            <Text style={styles.ledgerHash} testID="ledger-head-hash">{ledger.head_hash.slice(0, 40)}…</Text>
+            <View style={styles.ledgerMeta}>
+              <Text style={styles.ledgerMetaT}>{ledger.chained} chained · {ledger.legacy_unchained} pre-chain · {ledger.breaks.length} breaks</Text>
+            </View>
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -256,4 +276,14 @@ const styles = StyleSheet.create({
   govLab: { fontSize: 10, color: colors.muted, letterSpacing: 1.2, fontWeight: "700" },
   govTitle: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
   govSub: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
+  ledger: { marginTop: spacing.md, backgroundColor: "#0F0F10", borderRadius: radius.md, padding: spacing.lg },
+  ledgerHead: { flexDirection: "row", alignItems: "center", gap: 6 },
+  ledgerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#7BE38B" },
+  ledgerLab: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.5, fontWeight: "700" },
+  verifyPill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  verifyT: { fontSize: 10, fontWeight: "700" },
+  ledgerHead2: { color: "#8E8E93", fontSize: fs.sm, marginTop: spacing.sm },
+  ledgerHash: { color: "#7BE38B", fontFamily: "monospace", fontSize: 12, marginTop: 4 },
+  ledgerMeta: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: "#222" },
+  ledgerMetaT: { color: "#B8B8BD", fontSize: fs.sm },
 });

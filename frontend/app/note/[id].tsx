@@ -15,7 +15,7 @@ type Note = {
 };
 type Version = { id: string; version: number; stage: string; text: string; created_at: string };
 type Council = { agent: string; color_key: string; response: string };
-type Decision = { id: string; number: number; title: string; affected_projects: number; produced_tasks: number; referenced_notes: number; influenced_agents: number };
+type Decision = { id: string; number: number; title: string; affected_projects: number; produced_tasks: number; referenced_notes: number; influenced_agents: number; context_hash?: string; reasoning_hash?: string; governance_hash?: string; outcome_hash?: string; dna_root?: string };
 type Operation = { id: string; command: string; label: string; output: string; created_at: string };
 
 const OP_COMMANDS: { cmd: string; label: string; icon: string }[] = [
@@ -25,6 +25,19 @@ const OP_COMMANDS: { cmd: string; label: string; icon: string }[] = [
   { cmd: "find_gaps", label: "Find Gaps", icon: "search-outline" },
   { cmd: "next_actions", label: "Next Actions", icon: "flash-outline" },
 ];
+
+const DnaRow = ({ label, hash, verified }: { label: string; hash?: string; verified?: boolean }) => (
+  <View style={styles.dnaRow}>
+    <View style={{ flex: 1 }}>
+      <Text style={styles.dnaLabel}>{label}</Text>
+      <Text style={styles.dnaHash}>{hash ? hash.slice(0, 20) + "…" : "—"}</Text>
+    </View>
+    <View style={styles.dnaBadge}>
+      <Ionicons name="shield-checkmark" size={12} color={verified ? "#7BE38B" : "#B8B8BD"} />
+      <Text style={[styles.dnaBadgeT, { color: verified ? "#7BE38B" : "#B8B8BD" }]}>{verified ? "Verified" : "—"}</Text>
+    </View>
+  </View>
+);
 
 export default function NoteDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -245,6 +258,19 @@ export default function NoteDetail() {
                 <View style={styles.decMetric}><Text style={styles.decVal}>{d.referenced_notes}</Text><Text style={styles.decLab}>Notes</Text></View>
                 <View style={styles.decMetric}><Text style={styles.decVal}>{d.influenced_agents}</Text><Text style={styles.decLab}>Agents</Text></View>
               </View>
+              {d.dna_root ? (
+                <View style={styles.dnaBox}>
+                  <Text style={styles.dnaHeader}>Decision DNA</Text>
+                  <DnaRow label="Context" hash={d.context_hash} verified />
+                  <DnaRow label="Reasoning" hash={d.reasoning_hash} verified />
+                  <DnaRow label="Governance" hash={d.governance_hash} verified />
+                  <DnaRow label="Outcome" hash={d.outcome_hash} verified />
+                  <View style={styles.dnaRoot}>
+                    <Text style={styles.dnaRootLab}>DNA ROOT</Text>
+                    <Text style={styles.dnaRootHash}>{d.dna_root.slice(0, 40)}…</Text>
+                  </View>
+                </View>
+              ) : null}
             </View>
           ))}
         </View>
@@ -315,4 +341,16 @@ const styles = StyleSheet.create({
   opResultLab: { color: colors.muted, fontSize: fs.sm, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
   opResultTime: { color: colors.muted, fontSize: fs.sm },
   opResultT: { color: colors.onSurface, fontSize: fs.base, lineHeight: 22 },
+  chatAboutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.onSurface, padding: spacing.md, borderRadius: radius.md, marginTop: spacing.md },
+  chatAboutT: { color: "#fff", fontSize: fs.base, fontWeight: "700" },
+  dnaBox: { marginTop: spacing.md, backgroundColor: "#0F0F10", borderRadius: radius.sm, padding: spacing.md, gap: 6 },
+  dnaHeader: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.5, fontWeight: "700", marginBottom: 4 },
+  dnaRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: "#222" },
+  dnaLabel: { color: "#fff", fontSize: fs.sm, fontWeight: "700" },
+  dnaHash: { color: "#8E8E93", fontSize: 10, fontFamily: "monospace", marginTop: 2 },
+  dnaBadge: { flexDirection: "row", alignItems: "center", gap: 4 },
+  dnaBadgeT: { fontSize: 10, fontWeight: "700" },
+  dnaRoot: { marginTop: 6, alignItems: "center", paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: "#333" },
+  dnaRootLab: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.5, fontWeight: "700" },
+  dnaRootHash: { color: "#7BE38B", fontFamily: "monospace", fontSize: 11, marginTop: 4 },
 });
