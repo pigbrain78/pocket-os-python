@@ -47,8 +47,22 @@ export default function NoteDetail() {
     setOpBusy(cmd);
     try {
       const r = await api<Operation>(`/api/notes/${id}/operations`, { method: "POST", token, body: JSON.stringify({ command: cmd }) });
-      setOps([r, ...ops]);
+      setOps((prev) => [r, ...prev]);
     } catch (e: any) { alert(e.message); } finally { setOpBusy(null); }
+  };
+
+  const runAllOperations = async () => {
+    setOpBusy("all");
+    try {
+      const results: Operation[] = [];
+      for (const c of OP_COMMANDS) {
+        try {
+          const r = await api<Operation>(`/api/notes/${id}/operations`, { method: "POST", token, body: JSON.stringify({ command: c.cmd }) });
+          results.push(r);
+          setOps((prev) => [r, ...prev]);
+        } catch {}
+      }
+    } finally { setOpBusy(null); }
   };
 
   const runCouncil = async () => {
@@ -107,8 +121,22 @@ export default function NoteDetail() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sh}>Operations</Text>
-          <Text style={styles.subDim}>Issue commands to Pocket OS.</Text>
+          <View style={styles.rowBetween}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sh}>Operations</Text>
+              <Text style={styles.subDim}>Issue commands to Pocket OS.</Text>
+            </View>
+            <Pressable
+              style={[styles.smallBtn, opBusy === "all" && { opacity: 0.6 }]}
+              onPress={runAllOperations}
+              disabled={!!opBusy}
+              testID="run-all-ops"
+            >
+              {opBusy === "all" ? <ActivityIndicator color="#fff" size="small" /> : (
+                <Text style={styles.smallBtnT}>Run all</Text>
+              )}
+            </Pressable>
+          </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: spacing.md }} contentContainerStyle={{ gap: spacing.sm, paddingRight: spacing.md }}>
             {OP_COMMANDS.map(op => (
               <Pressable

@@ -1,15 +1,15 @@
 import React from "react";
-import { View, StyleSheet } from "react-native";
 import Svg, { Circle, Line, G, Text as SvgText } from "react-native-svg";
 import { colors } from "@/src/theme";
 
 type Node = { id: string; kind: string; label: string; weight: number };
 type Edge = { src: string; dst: string; kind: string };
 
-export default function GraphCanvas({ nodes, edges, width, height, selectedId }: {
-  nodes: Node[]; edges: Edge[]; width: number; height: number; selectedId?: string | null;
+export default function GraphCanvas({ nodes, edges, width, height, selectedId, onNodePress }: {
+  nodes: Node[]; edges: Edge[]; width: number; height: number;
+  selectedId?: string | null;
+  onNodePress?: (n: Node) => void;
 }) {
-  // Deterministic pseudo-random layout by hashing id
   const hash = (s: string) => {
     let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h);
   };
@@ -31,6 +31,18 @@ export default function GraphCanvas({ nodes, edges, width, height, selectedId }:
     };
   });
 
+  // Compute neighbor set of selected
+  const neighbors = new Set<string>();
+  if (selectedId) {
+    edges.forEach(e => {
+      if (e.src === selectedId) neighbors.add(e.dst);
+      if (e.dst === selectedId) neighbors.add(e.src);
+    });
+    neighbors.add(selectedId);
+  }
+
+  const isDim = (id: string) => !!selectedId && !neighbors.has(id);
+
   return (
     <Svg width={width} height={height}>
       <G>
@@ -38,13 +50,14 @@ export default function GraphCanvas({ nodes, edges, width, height, selectedId }:
           const a = positions[e.src]; const b = positions[e.dst];
           if (!a || !b) return null;
           const isSel = selectedId && (e.src === selectedId || e.dst === selectedId);
+          const isDimmed = !!selectedId && !isSel;
           return (
             <Line
               key={idx}
               x1={a.x} y1={a.y} x2={b.x} y2={b.y}
               stroke={isSel ? colors.onSurface : colors.borderStrong}
-              strokeWidth={isSel ? 1.5 : 0.6}
-              opacity={isSel ? 1 : 0.5}
+              strokeWidth={isSel ? 1.8 : 0.6}
+              opacity={isDimmed ? 0.08 : (isSel ? 1 : 0.5)}
             />
           );
         })}
@@ -52,15 +65,27 @@ export default function GraphCanvas({ nodes, edges, width, height, selectedId }:
           const p = positions[n.id]; if (!p) return null;
           const isNote = n.kind === "note";
           const size = isNote ? Math.min(18, 8 + n.weight) : Math.min(10, 5 + n.weight);
-          const fill = isNote ? colors.onSurface : (selectedId === n.id ? colors.info : colors.agentPlanner);
+          const isSelf = selectedId === n.id;
+          const inNeighborhood = neighbors.has(n.id);
+          const fill = isNote ? colors.onSurface : (isSelf ? colors.info : colors.agentPlanner);
+          const nodeOpacity = !selectedId ? 1 : (isSelf ? 1 : (inNeighborhood ? 0.9 : 0.15));
+          const r = isSelf ? size + 3 : size;
           return (
-            <G key={n.id}>
-              <Circle cx={p.x} cy={p.y} r={size} fill={fill} opacity={selectedId && selectedId !== n.id ? 0.35 : 1} />
-              {isNote && (
+            <G key={n.id} onPress={() => onNodePress?.(n)}>
+              {isSelf ? (
+                <Circle cx={p.x} cy={p.y} r={r + 6} fill={colors.info} opacity={0.15} />
+              ) : null}
+              <Circle cx={p.x} cy={p.y} r={r} fill={fill} opacity={nodeOpacity} />
+              {isNote && !selectedId ? (
                 <SvgText x={p.x + size + 4} y={p.y + 3} fontSize={9} fill={colors.onSurface}>
                   {n.label.slice(0, 14)}
                 </SvgText>
-              )}
+              ) : null}
+              {isSelf ? (
+                <SvgText x={p.x + r + 6} y={p.y + 3} fontSize={11} fill={colors.onSurface} fontWeight="bold">
+                  {n.label.slice(0, 18)}
+                </SvgText>
+              ) : null}
             </G>
           );
         })}

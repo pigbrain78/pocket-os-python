@@ -389,6 +389,32 @@ async def graph(user=Depends(get_current_user)):
     edges = await db.graph_edges.find({"user_id": user["id"]}, {"_id": 0}).to_list(3000)
     return {"nodes": nodes, "edges": edges}
 
+@api.get("/graph/node/{node_id}")
+async def graph_node(node_id: str, user=Depends(get_current_user)):
+    node = await db.graph_nodes.find_one({"id": node_id, "user_id": user["id"]}, {"_id": 0})
+    if not node:
+        raise HTTPException(status_code=404, detail="Not found")
+    incoming = await db.graph_edges.find({"user_id": user["id"], "dst": node_id}, {"_id": 0}).to_list(500)
+    outgoing = await db.graph_edges.find({"user_id": user["id"], "src": node_id}, {"_id": 0}).to_list(500)
+    neighbor_ids = list({e["src"] for e in incoming} | {e["dst"] for e in outgoing})
+    neighbors = await db.graph_nodes.find({"user_id": user["id"], "id": {"$in": neighbor_ids}}, {"_id": 0}).to_list(500)
+    connected_notes = sum(1 for n in neighbors if n["kind"] == "note")
+    connected_concepts = sum(1 for n in neighbors if n["kind"] == "concept")
+    decisions = 0
+    gravity = 0.0
+    if node["kind"] == "note":
+        decisions = await db.decisions.count_documents({"user_id": user["id"], "note_id": node_id})
+        gravity = await compute_gravity(user["id"], node_id)
+    return {
+        "node": node,
+        "gravity": gravity,
+        "connected_notes": connected_notes,
+        "connected_concepts": connected_concepts,
+        "decisions": decisions,
+        "neighbors": neighbors[:12],
+        "edge_count": len(incoming) + len(outgoing),
+    }
+
 # ---------------- Decisions ----------------
 @api.post("/decisions")
 async def create_decision(inp: DecisionIn, user=Depends(get_current_user)):
