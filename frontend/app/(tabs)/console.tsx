@@ -196,6 +196,15 @@ export default function ConsoleScreen() {
           </View>
           <Ionicons name="shield-checkmark-outline" size={28} color={colors.onSurface} />
         </Pressable>
+
+        <Pressable style={styles.govCta} onPress={() => router.push("/chat")} testID="open-chat-btn">
+          <View style={{ flex: 1 }}>
+            <Text style={styles.govLab}>GEMINI 3 FLASH</Text>
+            <Text style={styles.govTitle}>AI Chat</Text>
+            <Text style={styles.govSub}>Streaming multi-turn conversation.</Text>
+          </View>
+          <Ionicons name="chatbubbles-outline" size={28} color={colors.onSurface} />
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );

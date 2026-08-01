@@ -1,9 +1,11 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import logging
 import random
 import math
@@ -16,7 +18,7 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -677,6 +679,136 @@ async def run_operation(note_id: str, inp: OperationIn, user=Depends(get_current
 async def list_operations(note_id: str, user=Depends(get_current_user)):
     ops = await db.operations.find({"note_id": note_id, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(30)
     return ops
+
+# ---------------- Gemini Chat (multi-turn conversational) ----------------
+CHAT_SYSTEM = (
+    "You are Pocket OS, the user's cognitive assistant. Answer clearly and concisely. "
+    "Use markdown lightly (bullets, bold) only when it improves clarity. "
+    "When the user references their notes, decisions, or the graph, help them reason from their own history."
+)
+
+class ChatSessionIn(BaseModel):
+    title: Optional[str] = None
+    model: Optional[str] = "gemini-3-flash-preview"
+
+class ChatMessageIn(BaseModel):
+    text: str
+
+@api.get("/chat/sessions")
+async def list_chat_sessions(user=Depends(get_current_user)):
+    sessions = await db.chat_sessions.find({"user_id": user["id"]}, {"_id": 0}).sort("updated_at", -1).to_list(200)
+    return sessions
+
+@api.post("/chat/sessions")
+async def create_chat_session(inp: ChatSessionIn, user=Depends(get_current_user)):
+    s = {
+        "id": uid(),
+        "user_id": user["id"],
+        "title": inp.title or "New Chat",
+        "model": inp.model or "gemini-3-flash-preview",
+        "message_count": 0,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.chat_sessions.insert_one(s)
+    s.pop("_id", None)
+    return s
+
+@api.get("/chat/sessions/{sid}")
+async def get_chat_session(sid: str, user=Depends(get_current_user)):
+    s = await db.chat_sessions.find_one({"id": sid, "user_id": user["id"]}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Not found")
+    msgs = await db.chat_messages.find({"session_id": sid, "user_id": user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    return {"session": s, "messages": msgs}
+
+@api.delete("/chat/sessions/{sid}")
+async def delete_chat_session(sid: str, user=Depends(get_current_user)):
+    r1 = await db.chat_sessions.delete_one({"id": sid, "user_id": user["id"]})
+    await db.chat_messages.delete_many({"session_id": sid, "user_id": user["id"]})
+    if r1.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"status": "deleted"}
+
+@api.post("/chat/sessions/{sid}/stream")
+async def stream_chat_message(sid: str, inp: ChatMessageIn, user=Depends(get_current_user)):
+    session = await db.chat_sessions.find_one({"id": sid, "user_id": user["id"]}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user_msg = {
+        "id": uid(),
+        "session_id": sid,
+        "user_id": user["id"],
+        "role": "user",
+        "content": inp.text,
+        "created_at": now_iso(),
+    }
+    await db.chat_messages.insert_one(user_msg)
+
+    prior = await db.chat_messages.find(
+        {"session_id": sid, "user_id": user["id"], "id": {"$ne": user_msg["id"]}},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(200)
+
+    is_first = session.get("message_count", 0) == 0
+    if is_first:
+        new_title = inp.text.strip().split("\n")[0][:60] or session["title"]
+        await db.chat_sessions.update_one({"id": sid}, {"$set": {"title": new_title}})
+
+    model = session.get("model") or "gemini-3-flash-preview"
+
+    async def gen():
+        yield f"data: {json.dumps({'type':'start','user_message_id':user_msg['id']})}\n\n"
+
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=sid,
+            system_message=CHAT_SYSTEM,
+        ).with_model("gemini", model)
+
+        history_lines = []
+        for m in prior:
+            role = "User" if m["role"] == "user" else "Assistant"
+            history_lines.append(f"{role}: {m['content']}")
+        preamble = ("Conversation so far:\n" + "\n".join(history_lines) + "\n\n---\n\nNew user turn:\n") if history_lines else ""
+        prompt = preamble + inp.text
+
+        full = ""
+        try:
+            async for ev in chat.stream_message(UserMessage(text=prompt)):
+                if isinstance(ev, TextDelta) and ev.content:
+                    full += ev.content
+                    yield f"data: {json.dumps({'type':'delta','content':ev.content})}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+        except Exception as e:
+            err = str(e)[:200]
+            yield f"data: {json.dumps({'type':'error','error':err})}\n\n"
+            full = full or "(Chat model returned an error. Please try again.)"
+
+        assistant_id = uid()
+        await db.chat_messages.insert_one({
+            "id": assistant_id,
+            "session_id": sid,
+            "user_id": user["id"],
+            "role": "assistant",
+            "content": full,
+            "model": model,
+            "created_at": now_iso(),
+        })
+        await db.chat_sessions.update_one(
+            {"id": sid},
+            {"$inc": {"message_count": 2}, "$set": {"updated_at": now_iso()}},
+        )
+        yield f"data: {json.dumps({'type':'done','assistant_message_id':assistant_id,'total_len':len(full)})}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
 
 # ---------------- Governance Layer ----------------
 CAPABILITY_KEYWORDS = {
