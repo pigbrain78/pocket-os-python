@@ -16,6 +16,15 @@ type Note = {
 type Version = { id: string; version: number; stage: string; text: string; created_at: string };
 type Council = { agent: string; color_key: string; response: string };
 type Decision = { id: string; number: number; title: string; affected_projects: number; produced_tasks: number; referenced_notes: number; influenced_agents: number };
+type Operation = { id: string; command: string; label: string; output: string; created_at: string };
+
+const OP_COMMANDS: { cmd: string; label: string; icon: string }[] = [
+  { cmd: "summarize", label: "Summarize", icon: "reader-outline" },
+  { cmd: "refactor", label: "Refactor", icon: "construct-outline" },
+  { cmd: "generate_sop", label: "Generate SOP", icon: "list-outline" },
+  { cmd: "find_gaps", label: "Find Gaps", icon: "search-outline" },
+  { cmd: "next_actions", label: "Next Actions", icon: "flash-outline" },
+];
 
 export default function NoteDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,12 +33,23 @@ export default function NoteDetail() {
   const [data, setData] = useState<{ note: Note; versions: Version[]; council: Council[]; decisions: Decision[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [refresh, setRefresh] = useState(false);
+  const [ops, setOps] = useState<Operation[]>([]);
+  const [opBusy, setOpBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!token || !id) return;
     try { setData(await api(`/api/notes/${id}`, { token })); } catch {}
+    try { setOps(await api<Operation[]>(`/api/notes/${id}/operations`, { token })); } catch {}
   }, [token, id]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const runOperation = async (cmd: string) => {
+    setOpBusy(cmd);
+    try {
+      const r = await api<Operation>(`/api/notes/${id}/operations`, { method: "POST", token, body: JSON.stringify({ command: cmd }) });
+      setOps([r, ...ops]);
+    } catch (e: any) { alert(e.message); } finally { setOpBusy(null); }
+  };
 
   const runCouncil = async () => {
     setBusy(true);
@@ -84,6 +104,38 @@ export default function NoteDetail() {
             <Text style={styles.sub}>How much this idea pulls the rest of your knowledge.</Text>
           </View>
           <Ring size={90} strokeWidth={10} percent={note.gravity} color={colors.onSurface} />
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sh}>Operations</Text>
+          <Text style={styles.subDim}>Issue commands to Pocket OS.</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: spacing.md }} contentContainerStyle={{ gap: spacing.sm, paddingRight: spacing.md }}>
+            {OP_COMMANDS.map(op => (
+              <Pressable
+                key={op.cmd}
+                style={[styles.opChip, opBusy === op.cmd && { opacity: 0.6 }]}
+                onPress={() => runOperation(op.cmd)}
+                disabled={!!opBusy}
+                testID={`op-${op.cmd}`}
+              >
+                {opBusy === op.cmd ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name={op.icon as any} size={14} color="#fff" />}
+                <Text style={styles.opChipT}>{op.label}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          {ops.length === 0 ? null : (
+            <View style={{ marginTop: spacing.md, gap: spacing.md }}>
+              {ops.slice(0, 5).map(o => (
+                <View key={o.id} style={styles.opResult} testID={`op-result-${o.command}`}>
+                  <View style={styles.opResultHead}>
+                    <Text style={styles.opResultLab}>{o.label}</Text>
+                    <Text style={styles.opResultTime}>{dayjs(o.created_at).format("HH:mm")}</Text>
+                  </View>
+                  <Text style={styles.opResultT}>{o.output}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         <View style={styles.section}>
@@ -213,4 +265,11 @@ const styles = StyleSheet.create({
   roiTile: { flexBasis: "47%", flexGrow: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.lg },
   roiVal: { fontSize: fs["2xl"], fontWeight: "800", color: colors.onSurface },
   roiLab: { fontSize: fs.sm, color: colors.muted, marginTop: 4 },
+  opChip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.onSurface, paddingHorizontal: 14, paddingVertical: 10, borderRadius: radius.pill },
+  opChipT: { color: "#fff", fontWeight: "700", fontSize: fs.sm },
+  opResult: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.lg },
+  opResultHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  opResultLab: { color: colors.muted, fontSize: fs.sm, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
+  opResultTime: { color: colors.muted, fontSize: fs.sm },
+  opResultT: { color: colors.onSurface, fontSize: fs.base, lineHeight: 22 },
 });

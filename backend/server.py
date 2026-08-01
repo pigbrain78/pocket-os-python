@@ -518,6 +518,47 @@ async def console(user=Depends(get_current_user)):
         },
     }
 
+# ---------------- Operations (command palette) ----------------
+OPERATIONS = {
+    "summarize": ("Summarize the note in 3 crisp bullet points. Return only bullets starting with '- '.", "Summary"),
+    "refactor":  ("Rewrite this note more clearly and tightly, keeping the same meaning. Return only the rewritten note.", "Refactored"),
+    "generate_sop": ("Convert this note into a Standard Operating Procedure. Output: a numbered list of 4-7 steps, each imperative and specific. No preamble.", "SOP"),
+    "find_gaps": ("Identify what's MISSING from this note to make it complete or actionable. Return 3-5 gaps, each on its own line starting with '- '.", "Gaps"),
+    "next_actions": ("Extract concrete next actions from this note. Return 3-5 actions, each on its own line starting with '- '.", "Next Actions"),
+}
+
+class OperationIn(BaseModel):
+    command: str
+
+@api.post("/notes/{note_id}/operations")
+async def run_operation(note_id: str, inp: OperationIn, user=Depends(get_current_user)):
+    n = await db.notes.find_one({"id": note_id, "user_id": user["id"]}, {"_id": 0})
+    if not n:
+        raise HTTPException(status_code=404, detail="Not found")
+    op = OPERATIONS.get(inp.command)
+    if not op:
+        raise HTTPException(status_code=400, detail="Unknown command")
+    system, label = op
+    out = await gemini_chat(system, n["text"][:2000], session_id=f"op-{inp.command}-{note_id}")
+    record = {
+        "id": uid(),
+        "note_id": note_id,
+        "user_id": user["id"],
+        "command": inp.command,
+        "label": label,
+        "output": out or "Operation returned no result.",
+        "created_at": now_iso(),
+    }
+    await db.operations.insert_one(record)
+    record.pop("_id", None)
+    await log_event(user["id"], "operation_run", f"{label} on: {n['title']}", ref_id=note_id, meta={"command": inp.command})
+    return record
+
+@api.get("/notes/{note_id}/operations")
+async def list_operations(note_id: str, user=Depends(get_current_user)):
+    ops = await db.operations.find({"note_id": note_id, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(30)
+    return ops
+
 # ---------------- Opportunity Engine ----------------
 @api.get("/opportunities")
 async def opportunities(user=Depends(get_current_user)):
