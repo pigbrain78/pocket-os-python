@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "@/src/lib/auth";
 import { colors, spacing, radius, fs } from "@/src/theme";
 import { Ionicons } from "@expo/vector-icons";
+import AppleButton from "@/src/components/AppleButton";
 
 export default function Welcome() {
   const router = useRouter();
@@ -35,6 +36,7 @@ export default function Welcome() {
           ))}
         </View>
         <View style={styles.actions}>
+          <AppleButton onError={(m) => console.warn(m)} />
           <Pressable testID="cta-signup" style={styles.primary} onPress={() => router.push("/auth/register")}>
             <Text style={styles.primaryT}>Create your Genome</Text>
           </Pressable>

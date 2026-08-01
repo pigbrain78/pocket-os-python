@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "@/src/lib/auth";
 import { colors, spacing, radius, fs } from "@/src/theme";
 import { Ionicons } from "@expo/vector-icons";
+import AppleButton from "@/src/components/AppleButton";
 
 export default function Login() {
   const router = useRouter();
@@ -57,6 +58,8 @@ export default function Login() {
             <Pressable testID="login-submit" style={styles.btn} onPress={submit} disabled={busy}>
               {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnT}>Sign in</Text>}
             </Pressable>
+            <View style={styles.divider}><View style={styles.dLine} /><Text style={styles.dT}>or</Text><View style={styles.dLine} /></View>
+            <AppleButton onError={(m) => setErr(m)} />
             <Pressable onPress={() => router.replace("/auth/register")} testID="switch-to-register">
               <Text style={styles.switch}>Don't have an account? Create one</Text>
             </Pressable>
@@ -78,4 +81,7 @@ const styles = StyleSheet.create({
   btnT: { color: "#fff", fontSize: fs.lg, fontWeight: "700" },
   switch: { color: colors.muted, textAlign: "center", marginTop: spacing.lg, fontSize: fs.base },
   err: { color: colors.error, marginTop: spacing.sm },
+  divider: { flexDirection: "row", alignItems: "center", marginVertical: spacing.md, gap: spacing.md },
+  dLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  dT: { color: colors.muted, fontSize: fs.sm },
 });

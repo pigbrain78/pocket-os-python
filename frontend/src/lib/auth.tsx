@@ -10,6 +10,7 @@ type AuthCtx = {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
+  loginWithApple: (identityToken: string, fullName?: string | null, email?: string | null) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -82,6 +83,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await persist(data.token, data.user);
   }, []);
 
+  const loginWithApple = useCallback(async (identityToken: string, fullName?: string | null, email?: string | null) => {
+    const r = await fetch(`${BACKEND}/api/auth/apple`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity_token: identityToken, full_name: fullName, email }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Apple sign-in failed");
+    await persist(data.token, data.user);
+  }, []);
+
   const logout = useCallback(async () => {
     await store.del("pocketos_token");
     await store.del("pocketos_user");
@@ -90,7 +102,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <Ctx.Provider value={{ user, token, loading, login, register, logout }}>
+    <Ctx.Provider value={{ user, token, loading, login, register, loginWithApple, logout }}>
       {children}
     </Ctx.Provider>
   );

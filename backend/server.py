@@ -10,6 +10,7 @@ import math
 import uuid
 import jwt
 import bcrypt
+import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
@@ -24,6 +25,10 @@ MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
 EMERGENT_LLM_KEY = os.environ['EMERGENT_LLM_KEY']
 JWT_SECRET = os.environ['JWT_SECRET']
+APPLE_AUDIENCES = [a.strip() for a in os.environ.get('APPLE_AUDIENCES', '').split(',') if a.strip()]
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_ISSUER = "https://appleid.apple.com"
+_apple_jwks_cache: Dict[str, Any] = {"keys": None, "fetched_at": None}
 JWT_ALGO = "HS256"
 JWT_EXP_DAYS = 30
 
@@ -80,6 +85,11 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+class AppleIn(BaseModel):
+    identity_token: str
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
 
 class NoteIn(BaseModel):
     text: str
@@ -223,6 +233,89 @@ async def login(inp: LoginIn):
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
     return user
+
+# ---------------- Apple Sign-In ----------------
+async def get_apple_jwks() -> List[Dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    cached = _apple_jwks_cache.get("keys")
+    fetched = _apple_jwks_cache.get("fetched_at")
+    if cached and fetched and (now - fetched).total_seconds() < 3600:
+        return cached
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(APPLE_JWKS_URL)
+        r.raise_for_status()
+        keys = r.json().get("keys", [])
+    _apple_jwks_cache["keys"] = keys
+    _apple_jwks_cache["fetched_at"] = now
+    return keys
+
+async def verify_apple_identity_token(token: str) -> Dict[str, Any]:
+    if not APPLE_AUDIENCES:
+        raise HTTPException(status_code=500, detail="Server misconfigured: APPLE_AUDIENCES missing")
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as e:
+        raise HTTPException(status_code=401, detail=f"Malformed identity token: {e}")
+    kid = unverified_header.get("kid")
+    keys = await get_apple_jwks()
+    jwk = next((k for k in keys if k.get("kid") == kid), None)
+    if not jwk:
+        # Refresh once in case Apple rotated keys
+        _apple_jwks_cache["keys"] = None
+        keys = await get_apple_jwks()
+        jwk = next((k for k in keys if k.get("kid") == kid), None)
+    if not jwk:
+        raise HTTPException(status_code=401, detail="Signing key not found in Apple JWKS")
+    try:
+        public_key = jwt.PyJWK(jwk).key
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience=APPLE_AUDIENCES,
+            issuer=APPLE_ISSUER,
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Apple token: {e}")
+    if not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Apple token missing subject")
+    return payload
+
+@api.post("/auth/apple")
+async def apple_sign_in(inp: AppleIn):
+    payload = await verify_apple_identity_token(inp.identity_token)
+    apple_sub = payload["sub"]
+    email_from_token = payload.get("email")
+    email_verified = payload.get("email_verified") in (True, "true", "True")
+
+    # 1) Try to find an existing account by apple_sub
+    existing = await db.users.find_one({"apple_sub": apple_sub}, {"_id": 0, "password": 0})
+
+    # 2) If none, and Apple gave us a verified email, try to link by email
+    if not existing and email_from_token and email_verified:
+        existing = await db.users.find_one({"email": email_from_token.lower()}, {"_id": 0, "password": 0})
+        if existing:
+            await db.users.update_one({"id": existing["id"]}, {"$set": {"apple_sub": apple_sub}})
+            existing["apple_sub"] = apple_sub
+
+    if existing:
+        token = create_token(existing["id"])
+        return {"token": token, "user": {"id": existing["id"], "email": existing["email"], "name": existing.get("name", "")}}
+
+    # 3) New user — use first-sign-in name/email if Apple didn't include them
+    name = (inp.full_name or "").strip() or "Apple User"
+    email = (inp.email or email_from_token or f"{apple_sub}@privaterelay.apple").lower()
+    user = {
+        "id": uid(),
+        "email": email,
+        "name": name,
+        "apple_sub": apple_sub,
+        "password": None,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(user)
+    token = create_token(user["id"])
+    return {"token": token, "user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
 
 # ---------------- Notes / Timeline ----------------
 @api.post("/notes")

@@ -10,7 +10,8 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.thinkingreplay.ras3v3"
+      "bundleIdentifier": "com.emergent.thinkingreplay.ras3v3",
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
