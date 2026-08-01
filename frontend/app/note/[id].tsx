@@ -65,6 +65,16 @@ export default function NoteDetail() {
     } finally { setOpBusy(null); }
   };
 
+  const chatAboutNote = async () => {
+    try {
+      const s = await api<{ id: string }>(`/api/chat/sessions`, {
+        method: "POST", token,
+        body: JSON.stringify({ note_context_id: id }),
+      });
+      router.push({ pathname: "/chat/[id]", params: { id: s.id } });
+    } catch (e: any) { alert(e.message); }
+  };
+
   const runCouncil = async () => {
     setBusy(true);
     try {
@@ -119,6 +129,11 @@ export default function NoteDetail() {
           </View>
           <Ring size={90} strokeWidth={10} percent={note.gravity} color={colors.onSurface} />
         </View>
+
+        <Pressable style={styles.chatAboutBtn} onPress={chatAboutNote} testID="chat-about-note">
+          <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
+          <Text style={styles.chatAboutT}>Chat about this note</Text>
+        </Pressable>
 
         <View style={styles.section}>
           <View style={styles.rowBetween}>

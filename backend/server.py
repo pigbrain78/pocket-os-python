@@ -687,12 +687,29 @@ CHAT_SYSTEM = (
     "When the user references their notes, decisions, or the graph, help them reason from their own history."
 )
 
+# Model registry: model_id -> provider
+MODEL_REGISTRY = {
+    "gemini-3-flash-preview": {"provider": "gemini", "label": "Gemini 3 Flash", "hint": "Fast · low cost"},
+    "gpt-5.4": {"provider": "openai", "label": "GPT-5.4", "hint": "Balanced"},
+    "claude-sonnet-4-6": {"provider": "anthropic", "label": "Claude Sonnet 4.6", "hint": "Best reasoning"},
+}
+DEFAULT_MODEL = "gemini-3-flash-preview"
+
 class ChatSessionIn(BaseModel):
     title: Optional[str] = None
-    model: Optional[str] = "gemini-3-flash-preview"
+    model: Optional[str] = DEFAULT_MODEL
+    note_context_id: Optional[str] = None
+
+class ChatSessionUpdate(BaseModel):
+    model: Optional[str] = None
+    note_context_id: Optional[str] = None  # empty string clears
 
 class ChatMessageIn(BaseModel):
     text: str
+
+@api.get("/chat/models")
+async def list_models(user=Depends(get_current_user)):
+    return [{"id": mid, **meta} for mid, meta in MODEL_REGISTRY.items()]
 
 @api.get("/chat/sessions")
 async def list_chat_sessions(user=Depends(get_current_user)):
@@ -701,11 +718,19 @@ async def list_chat_sessions(user=Depends(get_current_user)):
 
 @api.post("/chat/sessions")
 async def create_chat_session(inp: ChatSessionIn, user=Depends(get_current_user)):
+    model = inp.model if inp.model in MODEL_REGISTRY else DEFAULT_MODEL
+    title = inp.title
+    if inp.note_context_id:
+        n = await db.notes.find_one({"id": inp.note_context_id, "user_id": user["id"]}, {"_id": 0})
+        if not n:
+            raise HTTPException(status_code=404, detail="Note context not found")
+        title = title or f"Chat about: {n['title']}"
     s = {
         "id": uid(),
         "user_id": user["id"],
-        "title": inp.title or "New Chat",
-        "model": inp.model or "gemini-3-flash-preview",
+        "title": title or "New Chat",
+        "model": model,
+        "note_context_id": inp.note_context_id,
         "message_count": 0,
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -713,6 +738,30 @@ async def create_chat_session(inp: ChatSessionIn, user=Depends(get_current_user)
     await db.chat_sessions.insert_one(s)
     s.pop("_id", None)
     return s
+
+@api.patch("/chat/sessions/{sid}")
+async def update_chat_session(sid: str, inp: ChatSessionUpdate, user=Depends(get_current_user)):
+    session = await db.chat_sessions.find_one({"id": sid, "user_id": user["id"]}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Not found")
+    updates: Dict[str, Any] = {}
+    if inp.model is not None:
+        if inp.model not in MODEL_REGISTRY:
+            raise HTTPException(status_code=400, detail=f"Unknown model {inp.model}")
+        updates["model"] = inp.model
+    if inp.note_context_id is not None:
+        if inp.note_context_id == "":
+            updates["note_context_id"] = None
+        else:
+            n = await db.notes.find_one({"id": inp.note_context_id, "user_id": user["id"]}, {"_id": 0})
+            if not n:
+                raise HTTPException(status_code=404, detail="Note not found")
+            updates["note_context_id"] = inp.note_context_id
+    if updates:
+        updates["updated_at"] = now_iso()
+        await db.chat_sessions.update_one({"id": sid}, {"$set": updates})
+    fresh = await db.chat_sessions.find_one({"id": sid}, {"_id": 0})
+    return fresh
 
 @api.get("/chat/sessions/{sid}")
 async def get_chat_session(sid: str, user=Depends(get_current_user)):
@@ -756,7 +805,15 @@ async def stream_chat_message(sid: str, inp: ChatMessageIn, user=Depends(get_cur
         new_title = inp.text.strip().split("\n")[0][:60] or session["title"]
         await db.chat_sessions.update_one({"id": sid}, {"$set": {"title": new_title}})
 
-    model = session.get("model") or "gemini-3-flash-preview"
+    model = session.get("model") or DEFAULT_MODEL
+    if model not in MODEL_REGISTRY:
+        model = DEFAULT_MODEL
+    provider = MODEL_REGISTRY[model]["provider"]
+
+    # Load note context if bound
+    note_ctx = None
+    if session.get("note_context_id"):
+        note_ctx = await db.notes.find_one({"id": session["note_context_id"], "user_id": user["id"]}, {"_id": 0})
 
     async def gen():
         yield f"data: {json.dumps({'type':'start','user_message_id':user_msg['id']})}\n\n"
@@ -765,14 +822,19 @@ async def stream_chat_message(sid: str, inp: ChatMessageIn, user=Depends(get_cur
             api_key=EMERGENT_LLM_KEY,
             session_id=sid,
             system_message=CHAT_SYSTEM,
-        ).with_model("gemini", model)
+        ).with_model(provider, model)
 
-        history_lines = []
-        for m in prior:
-            role = "User" if m["role"] == "user" else "Assistant"
-            history_lines.append(f"{role}: {m['content']}")
-        preamble = ("Conversation so far:\n" + "\n".join(history_lines) + "\n\n---\n\nNew user turn:\n") if history_lines else ""
-        prompt = preamble + inp.text
+        preamble_parts = []
+        if note_ctx:
+            preamble_parts.append(
+                f"The user has attached this note as context:\nTITLE: {note_ctx['title']}\nBODY:\n{note_ctx['text']}\n\n"
+                f"Concepts: {', '.join(note_ctx.get('concepts', []))}\n"
+                f"---\n"
+            )
+        if prior:
+            hist_lines = [f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}" for m in prior]
+            preamble_parts.append("Conversation so far:\n" + "\n".join(hist_lines) + "\n\n---\n\nNew user turn:\n")
+        prompt = "".join(preamble_parts) + inp.text
 
         full = ""
         try:
