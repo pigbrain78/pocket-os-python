@@ -35,3 +35,17 @@ Pocket OS is a **Cognitive Operating System** — not another note app. Everythi
 
 ## Business enhancement
 Every note carries **Attributed Revenue + Produced Projects/Tasks/Articles/Proposals** on the ROI card — making knowledge quality visible as a monetizable asset (naturally supports a Pro tier that surfaces ROI analytics).
+
+
+## Phase 3 — Council Debate Engine (Jun 2026)
+Multi-signal governance escalation replaces the naive "consensus.confidence < 0.65" trigger with an eight-signal escalator: `low_confidence`, `agent_disagreement (stddev>0.25)`, `high_risk`, `governance_domain` (security/governance/architecture/irreversibility/expense keyword match), `prior_decision_conflict`, `insufficient_evidence`, `novel_decision`, and `conflicting_positions`.
+
+When ANY signal fires, a three-turn debate is executed:
+1. **Critic (Claude Sonnet 4.6)** — argues against the majority verdict.
+2. **Defender (GPT-5.4)** — steelmans the majority, listing required conditions.
+3. **Synthesizer (Gemini 3 Flash)** — emits strict-JSON synthesis with `resolution`, `conditions[]`, `escalate`, `synthesis_position`, `confidence`.
+
+Every turn is written to the Immutable Event Ledger as its own hashed event, and the final Synthesis Proposal carries a canonical `synthesis_hash` (SHA-256 over triggers + turn hashes + synthesis payload). Synthesis Proposals remain **unratified** until a human ratifies (`POST /api/synthesis/{sid}/ratify`) or rejects (`POST /api/synthesis/{sid}/reject`). Ratification re-computes Decision DNA for every decision bound to the note so that `reasoning_hash` cryptographically covers the ratified synthesis, and adds a `synthesis_ratified` event to the Ledger. `reasoning_source` on the DNA card becomes `synthesis`, precedence: **synthesis > consensus > raw_council**.
+
+### New endpoints
+`GET /api/notes/{id}/debate/triggers`, `GET /api/notes/{id}/debate/latest`, `POST /api/notes/{id}/council/debate` (multi-turn), `POST /api/synthesis/{sid}/ratify`, `POST /api/synthesis/{sid}/reject`.

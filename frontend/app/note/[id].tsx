@@ -15,11 +15,27 @@ type Note = {
 };
 type Version = { id: string; version: number; stage: string; text: string; created_at: string };
 type Council = { agent: string; color_key: string; response: string };
-type Decision = { id: string; number: number; title: string; affected_projects: number; produced_tasks: number; referenced_notes: number; influenced_agents: number; context_hash?: string; reasoning_hash?: string; governance_hash?: string; outcome_hash?: string; dna_root?: string };
+type Decision = { id: string; number: number; title: string; affected_projects: number; produced_tasks: number; referenced_notes: number; influenced_agents: number; context_hash?: string; reasoning_hash?: string; governance_hash?: string; outcome_hash?: string; dna_root?: string; reasoning_source?: string; reasoning_consensus_id?: string; reasoning_synthesis_id?: string };
 type Operation = { id: string; command: string; label: string; output: string; created_at: string };
 type Verdict = { agent: string; color_key: string; position: string; confidence: number; risk_score: number; reasoning: string; evidence: string[] };
 type ConsensusScore = { score: number; recommendation: string; alignment: number; evidence_weight: number; risk_penalty: number; historical_success: number; avg_confidence: number; approve_count: number; reject_count: number; uncertain_count: number; needs_debate: boolean };
 type RouterPlan = { intent: string; mode: string; steps: { agent_name: string; role: string; score: number; governance: any }[]; context_refs: any };
+type Trigger = { kind: string; detail: string; weight: number };
+type DebateTurn = { role: string; provider: string; model: string; against?: string; for?: string; argument: string; argument_hash: string; responds_to?: any };
+type Synthesis = { resolution: string; conditions: string[]; escalate: boolean; escalate_reason: string; confidence: number; synthesis_position: string };
+type DebateRecord = { id: string; note_id: string; consensus_id: string; triggers: Trigger[]; disagreement_stddev: number; majority: string; turns: DebateTurn[]; synthesis: Synthesis; synthesis_hash: string; ratified: boolean; ratified_at?: string; ratified_by?: string; rejected: boolean; rejected_at?: string; rejected_by?: string; created_at: string };
+type TriggerResp = { triggers: Trigger[]; should_debate: boolean; disagreement_stddev: number; consensus_id?: string | null };
+
+const TRIGGER_LABELS: Record<string, { label: string; color: string }> = {
+  low_confidence: { label: "Low confidence", color: "#8A6D00" },
+  agent_disagreement: { label: "Agent disagreement", color: "#B41B10" },
+  high_risk: { label: "High risk", color: "#B41B10" },
+  governance_domain: { label: "Governance domain", color: "#5A3A00" },
+  prior_decision_conflict: { label: "Prior decision conflict", color: "#8A6D00" },
+  insufficient_evidence: { label: "Insufficient evidence", color: "#8A6D00" },
+  novel_decision: { label: "Novel decision", color: "#0E7A2A" },
+  conflicting_positions: { label: "Conflicting positions", color: "#B41B10" },
+};
 
 const OP_COMMANDS: { cmd: string; label: string; icon: string }[] = [
   { cmd: "summarize", label: "Summarize", icon: "reader-outline" },
@@ -29,10 +45,10 @@ const OP_COMMANDS: { cmd: string; label: string; icon: string }[] = [
   { cmd: "next_actions", label: "Next Actions", icon: "flash-outline" },
 ];
 
-const DnaRow = ({ label, hash, verified }: { label: string; hash?: string; verified?: boolean }) => (
+const DnaRow = ({ label, hash, verified, sublabel }: { label: string; hash?: string; verified?: boolean; sublabel?: string }) => (
   <View style={styles.dnaRow}>
     <View style={{ flex: 1 }}>
-      <Text style={styles.dnaLabel}>{label}</Text>
+      <Text style={styles.dnaLabel}>{label}{sublabel ? <Text style={{ color: "#7BE38B" }}>  · {sublabel}</Text> : null}</Text>
       <Text style={styles.dnaHash}>{hash ? hash.slice(0, 20) + "…" : "—"}</Text>
     </View>
     <View style={styles.dnaBadge}>
@@ -52,16 +68,22 @@ export default function NoteDetail() {
   const [ops, setOps] = useState<Operation[]>([]);
   const [opBusy, setOpBusy] = useState<string | null>(null);
   const [consensus, setConsensus] = useState<{ verdicts: Verdict[]; score: ConsensusScore } | null>(null);
-  const [debate, setDebate] = useState<{ synthesis: { resolution: string; conditions: string; escalate: string } } | null>(null);
+  const [triggers, setTriggers] = useState<TriggerResp | null>(null);
+  const [debate, setDebate] = useState<DebateRecord | null>(null);
   const [routerPlan, setRouterPlan] = useState<RouterPlan | null>(null);
   const [consensusBusy, setConsensusBusy] = useState(false);
   const [debateBusy, setDebateBusy] = useState(false);
+  const [ratifyBusy, setRatifyBusy] = useState<"ratify" | "reject" | null>(null);
   const [routerBusy, setRouterBusy] = useState(false);
 
   const load = useCallback(async () => {
     if (!token || !id) return;
     try { setData(await api(`/api/notes/${id}`, { token })); } catch {}
     try { setOps(await api<Operation[]>(`/api/notes/${id}/operations`, { token })); } catch {}
+    try {
+      const latest = await api<DebateRecord | null>(`/api/notes/${id}/debate/latest`, { token });
+      if (latest && latest.id) setDebate(latest);
+    } catch {}
   }, [token, id]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -98,18 +120,45 @@ export default function NoteDetail() {
   };
 
   const runConsensus = async () => {
-    setConsensusBusy(true); setDebate(null);
+    setConsensusBusy(true); setDebate(null); setTriggers(null);
     try {
       const r = await api<{ verdicts: Verdict[]; score: ConsensusScore }>(`/api/notes/${id}/council/consensus`, { method: "POST", token });
       setConsensus(r);
+      // Fetch trigger analysis for this fresh consensus
+      try {
+        const t = await api<TriggerResp>(`/api/notes/${id}/debate/triggers`, { token });
+        setTriggers(t);
+      } catch {}
+      // Recompute DNA on all existing decisions for this note so their reasoning_hash now covers the fresh verdicts
+      if (data?.decisions?.length) {
+        await Promise.all(data.decisions.map(d => api(`/api/decisions/${d.id}/dna`, { token }).catch(() => {})));
+        await load();
+      }
     } catch (e: any) { alert(e.message); } finally { setConsensusBusy(false); }
   };
   const runDebate = async () => {
     setDebateBusy(true);
     try {
-      const r = await api<any>(`/api/notes/${id}/council/debate`, { method: "POST", token });
+      const r = await api<DebateRecord>(`/api/notes/${id}/council/debate`, { method: "POST", token });
       setDebate(r);
     } catch (e: any) { alert(e.message); } finally { setDebateBusy(false); }
+  };
+  const ratifySynthesis = async () => {
+    if (!debate) return;
+    setRatifyBusy("ratify");
+    try {
+      const r = await api<{ synthesis: DebateRecord; rebound_decisions: any[] }>(`/api/synthesis/${debate.id}/ratify`, { method: "POST", token });
+      setDebate(r.synthesis);
+      await load();
+    } catch (e: any) { alert(e.message); } finally { setRatifyBusy(null); }
+  };
+  const rejectSynthesis = async () => {
+    if (!debate) return;
+    setRatifyBusy("reject");
+    try {
+      const r = await api<DebateRecord>(`/api/synthesis/${debate.id}/reject`, { method: "POST", token });
+      setDebate(r);
+    } catch (e: any) { alert(e.message); } finally { setRatifyBusy(null); }
   };
   const runRouter = async () => {
     setRouterBusy(true);
@@ -223,19 +272,121 @@ export default function NoteDetail() {
                   </View>
                 </View>
               ))}
-              {consensus.score.needs_debate ? (
+              {triggers && triggers.triggers.length > 0 ? (
+                <View style={styles.triggersBox} testID="debate-triggers">
+                  <Text style={styles.triggersLab}>DEBATE TRIGGERS · {triggers.triggers.length} signal{triggers.triggers.length === 1 ? "" : "s"}</Text>
+                  <View style={styles.triggerChips}>
+                    {triggers.triggers.map((t, i) => (
+                      <View key={i} style={[styles.triggerChip, { borderColor: (TRIGGER_LABELS[t.kind]?.color || "#B8B8BD") + "66", backgroundColor: (TRIGGER_LABELS[t.kind]?.color || "#B8B8BD") + "15" }]} testID={`trigger-${t.kind}`}>
+                        <Text style={[styles.triggerChipT, { color: TRIGGER_LABELS[t.kind]?.color || "#333" }]}>
+                          {TRIGGER_LABELS[t.kind]?.label || t.kind}
+                        </Text>
+                        <Text style={styles.triggerChipDetail} numberOfLines={1}>{t.detail}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  <Text style={styles.triggerFoot}>disagreement σ {triggers.disagreement_stddev} · escalation required</Text>
+                </View>
+              ) : null}
+
+              {(triggers?.should_debate || consensus.score.needs_debate) && !debate ? (
                 <Pressable style={styles.debateBtn} onPress={runDebate} disabled={debateBusy} testID="run-debate">
                   {debateBusy ? <ActivityIndicator color="#fff" size="small" /> : (
-                    <><Ionicons name="git-branch" size={14} color="#fff" /><Text style={styles.debateT}>Stalemate — synthesize resolution</Text></>
+                    <><Ionicons name="git-branch" size={14} color="#fff" /><Text style={styles.debateT}>Run Council Debate (Critic · Defender · Synthesis)</Text></>
                   )}
                 </Pressable>
               ) : null}
+
               {debate ? (
                 <View style={styles.debateBox} testID="debate-box">
-                  <Text style={styles.debateLab}>SYNTHESIS</Text>
-                  {debate.synthesis.resolution ? <Text style={styles.debateRow}><Text style={styles.debateK}>Resolution: </Text>{debate.synthesis.resolution}</Text> : null}
-                  {debate.synthesis.conditions ? <Text style={styles.debateRow}><Text style={styles.debateK}>Conditions: </Text>{debate.synthesis.conditions}</Text> : null}
-                  {debate.synthesis.escalate ? <Text style={styles.debateRow}><Text style={styles.debateK}>Escalate: </Text>{debate.synthesis.escalate}</Text> : null}
+                  <View style={styles.debateHead}>
+                    <Text style={styles.debateLab}>COUNCIL DEBATE</Text>
+                    {debate.ratified ? (
+                      <View style={[styles.debateStatus, { backgroundColor: "#DCF7DC" }]}>
+                        <Ionicons name="shield-checkmark" size={11} color="#0E7A2A" />
+                        <Text style={[styles.debateStatusT, { color: "#0E7A2A" }]}>RATIFIED</Text>
+                      </View>
+                    ) : debate.rejected ? (
+                      <View style={[styles.debateStatus, { backgroundColor: "#FFE9E7" }]}>
+                        <Ionicons name="close-circle" size={11} color="#B41B10" />
+                        <Text style={[styles.debateStatusT, { color: "#B41B10" }]}>REJECTED</Text>
+                      </View>
+                    ) : (
+                      <View style={[styles.debateStatus, { backgroundColor: "#FFF4CC" }]}>
+                        <Ionicons name="time" size={11} color="#8A6D00" />
+                        <Text style={[styles.debateStatusT, { color: "#8A6D00" }]}>UNRATIFIED</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {debate.turns.map((turn, i) => (
+                    <View key={i} style={styles.turnCard} testID={`debate-turn-${turn.role}`}>
+                      <View style={styles.turnHead}>
+                        <Text style={[styles.turnRole, {
+                          color: turn.role === "critic" ? "#B41B10" : turn.role === "defender" ? "#0E7A2A" : "#5A3A00"
+                        }]}>{turn.role.toUpperCase()}</Text>
+                        <Text style={styles.turnModel}>{turn.provider} · {turn.model}</Text>
+                      </View>
+                      <Text style={styles.turnBody}>{turn.argument}</Text>
+                      <Text style={styles.turnHash}>hash {turn.argument_hash.slice(0, 16)}…</Text>
+                    </View>
+                  ))}
+
+                  <View style={styles.synthCard} testID="synthesis-proposal">
+                    <View style={styles.turnHead}>
+                      <Text style={[styles.turnRole, { color: "#000" }]}>SYNTHESIS PROPOSAL</Text>
+                      <View style={[styles.posBadge, {
+                        backgroundColor: debate.synthesis.synthesis_position === "APPROVE" ? "#DCF7DC"
+                          : debate.synthesis.synthesis_position === "REJECT" ? "#FFE9E7"
+                          : debate.synthesis.synthesis_position === "CONDITIONAL_APPROVE" ? "#E8F0FF"
+                          : "#FFF4CC",
+                      }]}>
+                        <Text style={[styles.posT, {
+                          color: debate.synthesis.synthesis_position === "APPROVE" ? "#0E7A2A"
+                            : debate.synthesis.synthesis_position === "REJECT" ? "#B41B10"
+                            : debate.synthesis.synthesis_position === "CONDITIONAL_APPROVE" ? "#1A4FA3"
+                            : "#8A6D00",
+                        }]}>{debate.synthesis.synthesis_position}</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.debateRow}><Text style={styles.debateK}>Resolution: </Text>{debate.synthesis.resolution || "(no resolution parsed)"}</Text>
+                    {debate.synthesis.conditions.length > 0 ? (
+                      <View style={{ marginTop: 4 }}>
+                        <Text style={styles.debateK}>Conditions:</Text>
+                        {debate.synthesis.conditions.map((c, i) => (
+                          <Text key={i} style={styles.debateRow}>• {c}</Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    <Text style={styles.debateRow}>
+                      <Text style={styles.debateK}>Escalate to human: </Text>
+                      {debate.synthesis.escalate ? "YES" : "NO"}
+                      {debate.synthesis.escalate_reason ? ` — ${debate.synthesis.escalate_reason}` : ""}
+                    </Text>
+                    <Text style={styles.debateRow}>
+                      <Text style={styles.debateK}>Synthesizer confidence: </Text>{Math.round(debate.synthesis.confidence * 100)}%
+                    </Text>
+                    <Text style={styles.synthHash}>synthesis_hash · {debate.synthesis_hash.slice(0, 40)}…</Text>
+
+                    {!debate.ratified && !debate.rejected ? (
+                      <View style={styles.ratifyRow}>
+                        <Pressable style={[styles.ratifyBtn, styles.ratifyApprove]} onPress={ratifySynthesis} disabled={!!ratifyBusy} testID="ratify-synthesis">
+                          {ratifyBusy === "ratify" ? <ActivityIndicator color="#fff" size="small" /> : (
+                            <><Ionicons name="shield-checkmark" size={14} color="#fff" /><Text style={styles.ratifyBtnT}>Ratify (bind to DNA)</Text></>
+                          )}
+                        </Pressable>
+                        <Pressable style={[styles.ratifyBtn, styles.ratifyReject]} onPress={rejectSynthesis} disabled={!!ratifyBusy} testID="reject-synthesis">
+                          {ratifyBusy === "reject" ? <ActivityIndicator color="#B41B10" size="small" /> : (
+                            <><Ionicons name="close" size={14} color="#B41B10" /><Text style={[styles.ratifyBtnT, { color: "#B41B10" }]}>Reject</Text></>
+                          )}
+                        </Pressable>
+                      </View>
+                    ) : debate.ratified ? (
+                      <Text style={styles.ratifiedFoot}>Ratified by {debate.ratified_by} · reasoning_hash now covers this synthesis</Text>
+                    ) : (
+                      <Text style={styles.rejectedFoot}>Rejected by {debate.rejected_by} · retained for audit only</Text>
+                    )}
+                  </View>
                 </View>
               ) : null}
             </View>
@@ -387,7 +538,7 @@ export default function NoteDetail() {
                 <View style={styles.dnaBox}>
                   <Text style={styles.dnaHeader}>Decision DNA</Text>
                   <DnaRow label="Context" hash={d.context_hash} verified />
-                  <DnaRow label="Reasoning" hash={d.reasoning_hash} verified />
+                  <DnaRow label="Reasoning" hash={d.reasoning_hash} verified sublabel={d.reasoning_source === "synthesis" ? "bound to synthesis" : d.reasoning_source === "consensus" ? "bound to consensus" : d.reasoning_source === "raw_council" ? "raw council" : undefined} />
                   <DnaRow label="Governance" hash={d.governance_hash} verified />
                   <DnaRow label="Outcome" hash={d.outcome_hash} verified />
                   <View style={styles.dnaRoot}>
@@ -508,4 +659,29 @@ const styles = StyleSheet.create({
   leaseDot: { width: 8, height: 8, borderRadius: 4 },
   routeScore: { color: colors.onSurface, fontSize: fs.base, fontWeight: "700", minWidth: 32, textAlign: "right" },
   routeCtx: { color: colors.muted, fontSize: fs.sm, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  triggersBox: { marginTop: spacing.md, backgroundColor: "#FFF9E6", borderRadius: radius.sm, padding: spacing.md, borderWidth: 1, borderColor: "#F5D97A" },
+  triggersLab: { color: "#5A3A00", fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 8 },
+  triggerChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  triggerChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, borderWidth: 1, maxWidth: "100%" },
+  triggerChipT: { fontSize: 11, fontWeight: "800", letterSpacing: 0.3 },
+  triggerChipDetail: { fontSize: 10, color: "#666", flexShrink: 1 },
+  triggerFoot: { marginTop: 8, color: "#8A6D00", fontSize: 11, fontWeight: "600" },
+  debateHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  debateStatus: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  debateStatusT: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  turnCard: { backgroundColor: "#1A1A1C", borderRadius: 6, padding: spacing.sm, marginTop: 8, gap: 4 },
+  turnHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  turnRole: { fontSize: 11, fontWeight: "800", letterSpacing: 0.6 },
+  turnModel: { color: "#8E8E93", fontSize: 10 },
+  turnBody: { color: "#fff", fontSize: fs.sm, lineHeight: 20 },
+  turnHash: { color: "#5A5A5F", fontSize: 9, fontFamily: "monospace", marginTop: 2 },
+  synthCard: { marginTop: 10, backgroundColor: "#fff", borderRadius: 6, padding: spacing.md, gap: 6 },
+  synthHash: { color: "#8E8E93", fontSize: 9, fontFamily: "monospace", marginTop: 6 },
+  ratifyRow: { flexDirection: "row", gap: 8, marginTop: spacing.sm },
+  ratifyBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: radius.sm, borderWidth: 1 },
+  ratifyApprove: { backgroundColor: "#0E7A2A", borderColor: "#0E7A2A" },
+  ratifyReject: { backgroundColor: "#fff", borderColor: "#FFC5C0" },
+  ratifyBtnT: { color: "#fff", fontWeight: "800", fontSize: fs.sm },
+  ratifiedFoot: { marginTop: spacing.sm, color: "#0E7A2A", fontSize: 11, fontWeight: "700" },
+  rejectedFoot: { marginTop: spacing.sm, color: "#B41B10", fontSize: 11, fontWeight: "700" },
 });
