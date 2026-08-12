@@ -17,6 +17,9 @@ type Version = { id: string; version: number; stage: string; text: string; creat
 type Council = { agent: string; color_key: string; response: string };
 type Decision = { id: string; number: number; title: string; affected_projects: number; produced_tasks: number; referenced_notes: number; influenced_agents: number; context_hash?: string; reasoning_hash?: string; governance_hash?: string; outcome_hash?: string; dna_root?: string };
 type Operation = { id: string; command: string; label: string; output: string; created_at: string };
+type Verdict = { agent: string; color_key: string; position: string; confidence: number; risk_score: number; reasoning: string; evidence: string[] };
+type ConsensusScore = { score: number; recommendation: string; alignment: number; evidence_weight: number; risk_penalty: number; historical_success: number; avg_confidence: number; approve_count: number; reject_count: number; uncertain_count: number; needs_debate: boolean };
+type RouterPlan = { intent: string; mode: string; steps: { agent_name: string; role: string; score: number; governance: any }[]; context_refs: any };
 
 const OP_COMMANDS: { cmd: string; label: string; icon: string }[] = [
   { cmd: "summarize", label: "Summarize", icon: "reader-outline" },
@@ -48,6 +51,12 @@ export default function NoteDetail() {
   const [refresh, setRefresh] = useState(false);
   const [ops, setOps] = useState<Operation[]>([]);
   const [opBusy, setOpBusy] = useState<string | null>(null);
+  const [consensus, setConsensus] = useState<{ verdicts: Verdict[]; score: ConsensusScore } | null>(null);
+  const [debate, setDebate] = useState<{ synthesis: { resolution: string; conditions: string; escalate: string } } | null>(null);
+  const [routerPlan, setRouterPlan] = useState<RouterPlan | null>(null);
+  const [consensusBusy, setConsensusBusy] = useState(false);
+  const [debateBusy, setDebateBusy] = useState(false);
+  const [routerBusy, setRouterBusy] = useState(false);
 
   const load = useCallback(async () => {
     if (!token || !id) return;
@@ -86,6 +95,31 @@ export default function NoteDetail() {
       });
       router.push({ pathname: "/chat/[id]", params: { id: s.id } });
     } catch (e: any) { alert(e.message); }
+  };
+
+  const runConsensus = async () => {
+    setConsensusBusy(true); setDebate(null);
+    try {
+      const r = await api<{ verdicts: Verdict[]; score: ConsensusScore }>(`/api/notes/${id}/council/consensus`, { method: "POST", token });
+      setConsensus(r);
+    } catch (e: any) { alert(e.message); } finally { setConsensusBusy(false); }
+  };
+  const runDebate = async () => {
+    setDebateBusy(true);
+    try {
+      const r = await api<any>(`/api/notes/${id}/council/debate`, { method: "POST", token });
+      setDebate(r);
+    } catch (e: any) { alert(e.message); } finally { setDebateBusy(false); }
+  };
+  const runRouter = async () => {
+    setRouterBusy(true);
+    try {
+      const r = await api<RouterPlan>(`/api/router/route`, {
+        method: "POST", token,
+        body: JSON.stringify({ note_id: id, text: data?.note.text || "" }),
+      });
+      setRouterPlan(r);
+    } catch (e: any) { alert(e.message); } finally { setRouterBusy(false); }
   };
 
   const runCouncil = async () => {
@@ -147,6 +181,97 @@ export default function NoteDetail() {
           <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
           <Text style={styles.chatAboutT}>Chat about this note</Text>
         </Pressable>
+
+        <View style={styles.section}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.sh}>Council Consensus</Text>
+            <Pressable style={styles.smallBtn} onPress={runConsensus} disabled={consensusBusy} testID="run-consensus">
+              {consensusBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.smallBtnT}>{consensus ? "Rerun" : "Convene"}</Text>}
+            </Pressable>
+          </View>
+          {!consensus ? (
+            <Text style={styles.subDim}>Run a structured vote across the 5 agents (position + confidence + risk).</Text>
+          ) : (
+            <View style={styles.consBox}>
+              <View style={styles.consHead}>
+                <Text style={[styles.consRec, {
+                  color: consensus.score.recommendation === "APPROVE" ? "#0E7A2A"
+                    : consensus.score.recommendation === "REJECT" ? "#B41B10" : "#8A6D00"
+                }]}>{consensus.score.recommendation}</Text>
+                <Text style={styles.consScore}>score {consensus.score.score}</Text>
+              </View>
+              <View style={styles.consMeta}>
+                <Text style={styles.consMetaT}>align {consensus.score.alignment} · evidence {consensus.score.evidence_weight} · risk {consensus.score.risk_penalty} · hist {consensus.score.historical_success}</Text>
+                <Text style={styles.consMetaT}>{consensus.score.approve_count} approve · {consensus.score.reject_count} reject · {consensus.score.uncertain_count} uncertain</Text>
+              </View>
+              {consensus.verdicts.map(v => (
+                <View key={v.agent} style={styles.vRowC} testID={`verdict-${v.agent}`}>
+                  <View style={[styles.posBadge, {
+                    backgroundColor: v.position === "APPROVE" ? "#DCF7DC" : v.position === "REJECT" ? "#FFE9E7" : "#FFF4CC"
+                  }]}>
+                    <Text style={[styles.posT, {
+                      color: v.position === "APPROVE" ? "#0E7A2A" : v.position === "REJECT" ? "#B41B10" : "#8A6D00"
+                    }]}>{v.position}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.vAgent}>{v.agent}</Text>
+                    <Text style={styles.vReason} numberOfLines={2}>{v.reasoning}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.vNum}>{Math.round(v.confidence * 100)}%</Text>
+                    <Text style={styles.vRisk}>risk {v.risk_score}</Text>
+                  </View>
+                </View>
+              ))}
+              {consensus.score.needs_debate ? (
+                <Pressable style={styles.debateBtn} onPress={runDebate} disabled={debateBusy} testID="run-debate">
+                  {debateBusy ? <ActivityIndicator color="#fff" size="small" /> : (
+                    <><Ionicons name="git-branch" size={14} color="#fff" /><Text style={styles.debateT}>Stalemate — synthesize resolution</Text></>
+                  )}
+                </Pressable>
+              ) : null}
+              {debate ? (
+                <View style={styles.debateBox} testID="debate-box">
+                  <Text style={styles.debateLab}>SYNTHESIS</Text>
+                  {debate.synthesis.resolution ? <Text style={styles.debateRow}><Text style={styles.debateK}>Resolution: </Text>{debate.synthesis.resolution}</Text> : null}
+                  {debate.synthesis.conditions ? <Text style={styles.debateRow}><Text style={styles.debateK}>Conditions: </Text>{debate.synthesis.conditions}</Text> : null}
+                  {debate.synthesis.escalate ? <Text style={styles.debateRow}><Text style={styles.debateK}>Escalate: </Text>{debate.synthesis.escalate}</Text> : null}
+                </View>
+              ) : null}
+            </View>
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.sh}>Cognitive Router</Text>
+            <Pressable style={styles.smallBtn} onPress={runRouter} disabled={routerBusy} testID="run-router">
+              {routerBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.smallBtnT}>Route</Text>}
+            </Pressable>
+          </View>
+          {!routerPlan ? (
+            <Text style={styles.subDim}>Classify intent, pick agents, and assemble governed context.</Text>
+          ) : (
+            <View style={styles.routerBox}>
+              <View style={styles.routerHead}>
+                <Text style={styles.routerIntent}>{routerPlan.intent}</Text>
+                <Text style={styles.routerMode}>{routerPlan.mode.toUpperCase()}</Text>
+              </View>
+              {routerPlan.steps.map((s, i) => (
+                <View key={i} style={styles.routeRow} testID={`route-step-${s.agent_name}`}>
+                  <Text style={styles.routeIdx}>{i + 1}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.routeAgent}>{s.agent_name}</Text>
+                    <Text style={styles.routeRole}>{s.role}</Text>
+                  </View>
+                  <View style={[styles.leaseDot, { backgroundColor: s.governance.active_lease ? "#7BE38B" : "#FF3B30" }]} />
+                  <Text style={styles.routeScore}>{s.score}</Text>
+                </View>
+              ))}
+              <Text style={styles.routeCtx}>Context: {routerPlan.context_refs.notes.length} notes · {routerPlan.context_refs.decisions.length} decisions</Text>
+            </View>
+          )}
+        </View>
 
         <View style={styles.section}>
           <View style={styles.rowBetween}>
@@ -353,4 +478,34 @@ const styles = StyleSheet.create({
   dnaRoot: { marginTop: 6, alignItems: "center", paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: "#333" },
   dnaRootLab: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.5, fontWeight: "700" },
   dnaRootHash: { color: "#7BE38B", fontFamily: "monospace", fontSize: 11, marginTop: 4 },
+  consBox: { marginTop: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md },
+  consHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" },
+  consRec: { fontSize: fs.xl, fontWeight: "800", letterSpacing: 0.5 },
+  consScore: { color: colors.onSurface, fontSize: fs.lg, fontWeight: "700" },
+  consMeta: { marginTop: 4, marginBottom: spacing.md },
+  consMetaT: { color: colors.muted, fontSize: fs.sm },
+  vRowC: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border },
+  posBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, minWidth: 68, alignItems: "center" },
+  posT: { fontSize: 10, fontWeight: "800", letterSpacing: 0.6 },
+  vAgent: { color: colors.onSurface, fontSize: fs.base, fontWeight: "700" },
+  vReason: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
+  vNum: { color: colors.onSurface, fontSize: fs.base, fontWeight: "800" },
+  vRisk: { color: colors.muted, fontSize: fs.sm },
+  debateBtn: { marginTop: spacing.md, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: colors.onSurface, paddingVertical: 10, borderRadius: radius.sm },
+  debateT: { color: "#fff", fontWeight: "700", fontSize: fs.sm },
+  debateBox: { marginTop: spacing.md, backgroundColor: "#0F0F10", borderRadius: radius.sm, padding: spacing.md, gap: 6 },
+  debateLab: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.2, fontWeight: "700" },
+  debateRow: { color: "#fff", fontSize: fs.sm, lineHeight: 20 },
+  debateK: { color: "#7BE38B", fontWeight: "700" },
+  routerBox: { marginTop: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md },
+  routerHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: spacing.sm },
+  routerIntent: { color: colors.onSurface, fontSize: fs.xl, fontWeight: "800", letterSpacing: 0.5 },
+  routerMode: { color: colors.muted, fontSize: fs.sm, fontWeight: "700", letterSpacing: 0.8 },
+  routeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border },
+  routeIdx: { color: colors.muted, fontSize: fs.sm, fontWeight: "700", width: 16 },
+  routeAgent: { color: colors.onSurface, fontSize: fs.base, fontWeight: "700" },
+  routeRole: { color: colors.muted, fontSize: fs.sm },
+  leaseDot: { width: 8, height: 8, borderRadius: 4 },
+  routeScore: { color: colors.onSurface, fontSize: fs.base, fontWeight: "700", minWidth: 32, textAlign: "right" },
+  routeCtx: { color: colors.muted, fontSize: fs.sm, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
 });

@@ -137,12 +137,121 @@ AGENTS = [
     ("Documentation Steward", "agentDocSteward", "You are a Documentation Steward. In 1-2 short sentences, describe how you would document or reorganize this knowledge."),
 ]
 
+# Consensus-mode: each agent produces a structured verdict
+CONSENSUS_PROMPT = (
+    "Return ONLY strict JSON (no backticks, no prose) with these keys:\n"
+    "  position: one of \"APPROVE\", \"REJECT\", \"UNCERTAIN\"\n"
+    "  confidence: float 0..1 (your certainty in your position)\n"
+    "  risk_score: float 0..1 (how risky adopting this idea would be)\n"
+    "  reasoning: one short sentence explaining your verdict\n"
+    "  evidence: array of 1-3 short bullet strings\n"
+)
+CONSENSUS_SYSTEMS = {
+    "Research": "You are the Research Agent. Judge whether the note is backed by evidence and prior work. " + CONSENSUS_PROMPT,
+    "Architect": "You are the Architect Agent. Judge whether the note fits the user's system architecture. " + CONSENSUS_PROMPT,
+    "Critic": "You are the Critic Agent. Judge the strongest reason to REJECT the note. Bias toward REJECT if any material risk exists. " + CONSENSUS_PROMPT,
+    "Planner": "You are the Planner Agent. Judge whether the note points to a viable next milestone. " + CONSENSUS_PROMPT,
+    "Documentation Steward": "You are the Documentation Steward. Judge whether the note is coherent enough to canonicalize. " + CONSENSUS_PROMPT,
+}
+POSITION_WEIGHT = {"APPROVE": 1.0, "REJECT": -1.0, "UNCERTAIN": 0.0}
+CONSENSUS_THRESHOLD = 0.5
+
 async def run_council(note_text: str) -> List[Dict[str, str]]:
     results = []
     for name, color, sys in AGENTS:
         msg = await gemini_chat(sys, note_text[:1500], session_id=f"council-{name}")
         results.append({"agent": name, "color_key": color, "response": msg or f"{name} could not respond right now."})
     return results
+
+def _parse_json_lenient(raw: str) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    s = raw.strip()
+    # strip common wrappers
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+    # find first { and last }
+    a = s.find("{"); b = s.rfind("}")
+    if a >= 0 and b > a:
+        s = s[a:b+1]
+    try:
+        return json.loads(s)
+    except Exception:
+        return None
+
+async def run_council_consensus(note_text: str) -> List[Dict[str, Any]]:
+    """Structured mode: each agent returns position/confidence/risk/reasoning/evidence."""
+    results = []
+    for name, color, _ in AGENTS:
+        system = CONSENSUS_SYSTEMS[name]
+        raw = await gemini_chat(system, note_text[:1500], session_id=f"consensus-{name}")
+        parsed = _parse_json_lenient(raw) or {}
+        pos = str(parsed.get("position", "UNCERTAIN")).upper()
+        if pos not in POSITION_WEIGHT:
+            pos = "UNCERTAIN"
+        try:
+            conf = max(0.0, min(1.0, float(parsed.get("confidence", 0.5))))
+        except Exception:
+            conf = 0.5
+        try:
+            risk = max(0.0, min(1.0, float(parsed.get("risk_score", 0.3))))
+        except Exception:
+            risk = 0.3
+        evidence = parsed.get("evidence") or []
+        if isinstance(evidence, str):
+            evidence = [evidence]
+        evidence = [str(e)[:200] for e in evidence][:3]
+        reasoning = str(parsed.get("reasoning", raw[:180] if raw else ""))[:220]
+        results.append({
+            "agent": name,
+            "color_key": color,
+            "position": pos,
+            "confidence": round(conf, 2),
+            "risk_score": round(risk, 2),
+            "reasoning": reasoning,
+            "evidence": evidence,
+        })
+    return results
+
+def compute_consensus_score(verdicts: List[Dict[str, Any]], historical_success: float = 0.8) -> Dict[str, Any]:
+    if not verdicts:
+        return {"score": 0, "recommendation": "UNCERTAIN", "alignment": 0, "evidence_weight": 0, "risk_penalty": 0, "historical_success": historical_success, "needs_debate": True}
+    # Signed alignment: sum(position * confidence) / N   -> -1..+1
+    aligned = sum(POSITION_WEIGHT[v["position"]] * v["confidence"] for v in verdicts) / len(verdicts)
+    # Evidence weight: how much verdicts cited evidence
+    evidence_weight = sum(min(1.0, len(v["evidence"]) / 3.0) for v in verdicts) / len(verdicts)
+    # Average risk
+    risk_penalty = sum(v["risk_score"] for v in verdicts) / len(verdicts)
+    # Final signed decision score in a bounded range
+    raw = evidence_weight + aligned + historical_success - risk_penalty
+    score = round(raw, 3)
+    # Recommendation
+    if aligned >= 0.4 and risk_penalty < 0.6:
+        rec = "APPROVE"
+    elif aligned <= -0.4:
+        rec = "REJECT"
+    else:
+        rec = "UNCERTAIN"
+    # Needs debate if the council is split or confidence is low
+    approve = sum(1 for v in verdicts if v["position"] == "APPROVE")
+    reject = sum(1 for v in verdicts if v["position"] == "REJECT")
+    avg_conf = sum(v["confidence"] for v in verdicts) / len(verdicts)
+    stalemate = (approve > 0 and reject > 0 and abs(approve - reject) <= 1) or avg_conf < CONSENSUS_THRESHOLD
+    return {
+        "score": score,
+        "recommendation": rec,
+        "alignment": round(aligned, 2),
+        "evidence_weight": round(evidence_weight, 2),
+        "risk_penalty": round(risk_penalty, 2),
+        "historical_success": round(historical_success, 2),
+        "avg_confidence": round(avg_conf, 2),
+        "approve_count": approve,
+        "reject_count": reject,
+        "uncertain_count": len(verdicts) - approve - reject,
+        "needs_debate": bool(stalemate),
+    }
 
 # ---------------- Concept & Graph plumbing ----------------
 async def upsert_concept_node(user_id: str, concept: str) -> str:
@@ -540,6 +649,91 @@ async def council(note_id: str, user=Depends(get_current_user)):
         })
     await log_event(user["id"], "council_convened", f"AI Council reviewed: {n['title']}", ref_id=note_id)
     return {"responses": responses}
+
+@api.post("/notes/{note_id}/council/consensus")
+async def council_consensus(note_id: str, user=Depends(get_current_user)):
+    """Structured Council Protocol: each agent returns position/confidence/risk/evidence,
+    the consensus engine scores them, and the note gets a formal verdict."""
+    n = await db.notes.find_one({"id": note_id, "user_id": user["id"]}, {"_id": 0})
+    if not n:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Historical success rate for this user - drives one term of the score
+    total_dec = await db.decisions.count_documents({"user_id": user["id"]})
+    reversed_ = await db.executions.count_documents({"user_id": user["id"], "state": "REVERSED"})
+    executed = await db.executions.count_documents({"user_id": user["id"], "state": "EXECUTED"})
+    if executed + reversed_ > 0:
+        history = max(0.4, executed / (executed + reversed_))
+    else:
+        history = 0.8
+
+    verdicts = await run_council_consensus(n["text"])
+    scored = compute_consensus_score(verdicts, historical_success=history)
+
+    record = {
+        "id": uid(),
+        "note_id": note_id,
+        "user_id": user["id"],
+        "verdicts": verdicts,
+        "score": scored,
+        "created_at": now_iso(),
+    }
+    await db.consensus_records.insert_one(record)
+    record.pop("_id", None)
+    await log_event(
+        user["id"], "consensus_convened",
+        f"Consensus: {scored['recommendation']} ({scored['approve_count']}A/{scored['reject_count']}R) on: {n['title']}",
+        ref_id=note_id,
+        meta={"score": scored["score"], "recommendation": scored["recommendation"], "needs_debate": scored["needs_debate"]},
+    )
+    return record
+
+@api.post("/notes/{note_id}/council/debate")
+async def council_debate(note_id: str, user=Depends(get_current_user)):
+    """When consensus is a stalemate: fetch latest verdicts + note, ask a synthesizer to
+    render a resolution proposal that a human can accept."""
+    n = await db.notes.find_one({"id": note_id, "user_id": user["id"]}, {"_id": 0})
+    if not n:
+        raise HTTPException(status_code=404, detail="Not found")
+    latest = await db.consensus_records.find({"note_id": note_id, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(1).to_list(1)
+    if not latest:
+        raise HTTPException(status_code=400, detail="No consensus record yet. Convene consensus first.")
+    verdicts = latest[0]["verdicts"]
+    positions = "\n".join(f"- {v['agent']} → {v['position']} (conf {v['confidence']}, risk {v['risk_score']}): {v['reasoning']}" for v in verdicts)
+    system = (
+        "You are the Council Synthesizer. The 5 agents disagree. Read all positions and produce a resolution "
+        "in 3 short parts, each on its own line prefixed with 'RESOLUTION:', 'CONDITIONS:', and 'ESCALATE:'. "
+        "RESOLUTION = one-sentence best path forward. "
+        "CONDITIONS = 1-2 short conditions under which RESOLUTION holds. "
+        "ESCALATE = a single yes/no on whether human review is required and why."
+    )
+    prompt = f"Note: {n['title']}\n{n['text'][:800]}\n\nAgent positions:\n{positions}"
+    out = await gemini_chat(system, prompt, session_id=f"debate-{note_id}")
+
+    # Parse the 3-part response
+    lines = {"resolution": "", "conditions": "", "escalate": ""}
+    for line in (out or "").split("\n"):
+        u = line.strip()
+        if u.upper().startswith("RESOLUTION:"):
+            lines["resolution"] = u.split(":", 1)[1].strip()
+        elif u.upper().startswith("CONDITIONS:"):
+            lines["conditions"] = u.split(":", 1)[1].strip()
+        elif u.upper().startswith("ESCALATE:"):
+            lines["escalate"] = u.split(":", 1)[1].strip()
+
+    record = {
+        "id": uid(),
+        "note_id": note_id,
+        "user_id": user["id"],
+        "consensus_id": latest[0]["id"],
+        "synthesis": lines,
+        "raw": out or "",
+        "created_at": now_iso(),
+    }
+    await db.debates.insert_one(record)
+    record.pop("_id", None)
+    await log_event(user["id"], "debate_synthesized", f"Debate synthesized for: {n['title']}", ref_id=note_id)
+    return record
 
 @api.post("/notes/{note_id}/evolve")
 async def evolve_note(note_id: str, inp: NoteIn, user=Depends(get_current_user)):
@@ -1609,6 +1803,133 @@ async def seed_demo(user=Depends(get_current_user)):
     return {"status": "seeded", "notes": len(created_ids)}
 
 # ---------------- Wire ----------------
+
+# ---------------- Cognitive Router ----------------
+INTENT_KEYWORDS = {
+    "RESEARCH":       ["research", "cite", "prior work", "benchmark", "study", "compare", "sources", "evidence"],
+    "ARCHITECTURE":   ["architecture", "design", "system", "schema", "runtime", "layer", "protocol"],
+    "CRITIQUE":       ["critique", "risk", "weakness", "objection", "reject", "flaw", "assumption"],
+    "PLANNING":       ["plan", "milestone", "roadmap", "next step", "sequence", "phases"],
+    "SOP_GENERATION": ["sop", "procedure", "runbook", "checklist", "operating", "instructions"],
+    "DECISION":       ["decide", "decision", "approve", "choose", "trade-off", "should we"],
+    "DOCUMENTATION":  ["document", "readme", "spec", "canonical", "steward"],
+    "GENERAL":        [],
+}
+INTENT_AGENTS = {
+    "RESEARCH":       [("Research Agent", "primary"), ("Architect Agent", "reviewer")],
+    "ARCHITECTURE":   [("Architect Agent", "primary"), ("Critic Agent", "reviewer"), ("Documentation Steward", "steward")],
+    "CRITIQUE":       [("Critic Agent", "primary"), ("Research Agent", "evidence")],
+    "PLANNING":       [("Planner Agent", "primary"), ("Architect Agent", "reviewer"), ("Critic Agent", "stress-test")],
+    "SOP_GENERATION": [("Documentation Steward", "primary"), ("Architect Agent", "reviewer")],
+    "DECISION":       [("Research Agent", "evidence"), ("Architect Agent", "structure"), ("Critic Agent", "stress-test"), ("Planner Agent", "next-milestone")],
+    "DOCUMENTATION":  [("Documentation Steward", "primary"), ("Architect Agent", "reviewer")],
+    "GENERAL":        [("Research Agent", "primary"), ("Planner Agent", "reviewer")],
+}
+INTENT_MODE = {
+    "RESEARCH": "sequential", "ARCHITECTURE": "sequential", "CRITIQUE": "single",
+    "PLANNING": "sequential", "SOP_GENERATION": "sequential", "DECISION": "parallel",
+    "DOCUMENTATION": "sequential", "GENERAL": "single",
+}
+
+class RouteIn(BaseModel):
+    text: Optional[str] = None
+    note_id: Optional[str] = None
+    task_type: Optional[str] = None
+
+def classify_intent(text: str, hint: Optional[str]) -> str:
+    if hint and hint.upper() in INTENT_KEYWORDS:
+        return hint.upper()
+    t = text.lower()
+    best, best_score = "GENERAL", 0
+    for intent, kws in INTENT_KEYWORDS.items():
+        score = sum(1 for k in kws if k in t)
+        if score > best_score:
+            best, best_score = intent, score
+    return best
+
+@api.post("/router/route")
+async def router_route(inp: RouteIn, user=Depends(get_current_user)):
+    if not inp.text and not inp.note_id:
+        raise HTTPException(status_code=400, detail="Provide text or note_id")
+
+    note = None
+    text_for_intent = inp.text or ""
+    if inp.note_id:
+        note = await db.notes.find_one({"id": inp.note_id, "user_id": user["id"]}, {"_id": 0})
+        if not note:
+            raise HTTPException(status_code=404, detail="Note not found")
+        text_for_intent = (inp.text or "") + " " + note["title"] + " " + note["text"]
+
+    intent = classify_intent(text_for_intent, inp.task_type)
+    mode = INTENT_MODE[intent]
+
+    await ensure_builtin_agents(user["id"])
+    registry = await db.agents.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
+    reg_by_name = {a["name"]: a for a in registry}
+
+    steps = []
+    for name, role in INTENT_AGENTS[intent]:
+        a = reg_by_name.get(name)
+        if not a:
+            continue
+        lease = await db.leases.find_one({"agent_id": a["id"], "user_id": user["id"], "status": "active"}, {"_id": 0})
+        risk_pen = {"low": 0, "medium": 10, "high": 25}.get(a.get("risk", "medium"), 10)
+        score = int(a.get("trust_score", 50)) + (10 if lease else -30) - risk_pen
+        steps.append({
+            "agent_id": a["id"],
+            "agent_name": a["name"],
+            "role": role,
+            "score": score,
+            "governance": {
+                "active_lease": bool(lease),
+                "capabilities": lease["capabilities"] if lease else a["capabilities"],
+                "risk": a.get("risk"),
+                "expires_at": lease["expires_at"] if lease else None,
+            },
+        })
+
+    context_refs = {"notes": [], "concepts": [], "decisions": [], "recent_events": []}
+    if note:
+        context_refs["notes"].append({
+            "id": note["id"], "title": note["title"], "concepts": note.get("concepts", []),
+            "gravity": await compute_gravity(user["id"], note["id"]),
+        })
+        edges = await db.graph_edges.find(
+            {"user_id": user["id"], "$or": [{"src": note["id"]}, {"dst": note["id"]}], "kind": "related"},
+            {"_id": 0},
+        ).to_list(20)
+        nb_ids = list({(e["dst"] if e["src"] == note["id"] else e["src"]) for e in edges})
+        nb_notes = await db.notes.find({"id": {"$in": nb_ids}, "user_id": user["id"]}, {"_id": 0}).to_list(20)
+        for nb in nb_notes[:5]:
+            context_refs["notes"].append({
+                "id": nb["id"], "title": nb["title"],
+                "gravity": await compute_gravity(user["id"], nb["id"]),
+            })
+        related_decisions = await db.decisions.find({"user_id": user["id"], "note_id": note["id"]}, {"_id": 0}).limit(5).to_list(5)
+        context_refs["decisions"] = [
+            {"id": d["id"], "number": d["number"], "title": d["title"], "dna_root": d.get("dna_root")}
+            for d in related_decisions
+        ]
+
+    ev = await db.events.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(5)
+    context_refs["recent_events"] = [{"kind": e["kind"], "text": e["text"], "created_at": e["created_at"]} for e in ev]
+
+    plan = {
+        "id": uid(), "user_id": user["id"], "intent": intent, "mode": mode,
+        "steps": steps, "context_refs": context_refs,
+        "source": {"note_id": inp.note_id, "text_preview": (inp.text or "")[:200]},
+        "created_at": now_iso(),
+    }
+    await db.routing_plans.insert_one(plan)
+    plan.pop("_id", None)
+    await log_event(
+        user["id"], "router_planned",
+        f"Intent {intent} → {mode} across {len(steps)} agents",
+        ref_id=inp.note_id, meta={"intent": intent, "mode": mode, "step_count": len(steps)},
+    )
+    return plan
+
+
 app.include_router(api)
 
 app.add_middleware(
