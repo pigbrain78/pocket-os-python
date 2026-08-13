@@ -272,32 +272,35 @@ export default function NoteDetail() {
                   </View>
                 </View>
               ))}
-              {triggers && triggers.triggers.length > 0 ? (
-                <View style={styles.triggersBox} testID="debate-triggers">
-                  <Text style={styles.triggersLab}>DEBATE TRIGGERS · {triggers.triggers.length} signal{triggers.triggers.length === 1 ? "" : "s"}</Text>
-                  <View style={styles.triggerChips}>
-                    {triggers.triggers.map((t, i) => (
-                      <View key={i} style={[styles.triggerChip, { borderColor: (TRIGGER_LABELS[t.kind]?.color || "#B8B8BD") + "66", backgroundColor: (TRIGGER_LABELS[t.kind]?.color || "#B8B8BD") + "15" }]} testID={`trigger-${t.kind}`}>
-                        <Text style={[styles.triggerChipT, { color: TRIGGER_LABELS[t.kind]?.color || "#333" }]}>
-                          {TRIGGER_LABELS[t.kind]?.label || t.kind}
-                        </Text>
-                        <Text style={styles.triggerChipDetail} numberOfLines={1}>{t.detail}</Text>
-                      </View>
-                    ))}
+            </View>
+          )}
+
+          {triggers && triggers.triggers.length > 0 ? (
+            <View style={styles.triggersBox} testID="debate-triggers">
+              <Text style={styles.triggersLab}>DEBATE TRIGGERS · {triggers.triggers.length} signal{triggers.triggers.length === 1 ? "" : "s"}</Text>
+              <View style={styles.triggerChips}>
+                {triggers.triggers.map((t, i) => (
+                  <View key={i} style={[styles.triggerChip, { borderColor: (TRIGGER_LABELS[t.kind]?.color || "#B8B8BD") + "66", backgroundColor: (TRIGGER_LABELS[t.kind]?.color || "#B8B8BD") + "15" }]} testID={`trigger-${t.kind}`}>
+                    <Text style={[styles.triggerChipT, { color: TRIGGER_LABELS[t.kind]?.color || "#333" }]}>
+                      {TRIGGER_LABELS[t.kind]?.label || t.kind}
+                    </Text>
+                    <Text style={styles.triggerChipDetail} numberOfLines={1}>{t.detail}</Text>
                   </View>
-                  <Text style={styles.triggerFoot}>disagreement σ {triggers.disagreement_stddev} · escalation required</Text>
-                </View>
-              ) : null}
+                ))}
+              </View>
+              <Text style={styles.triggerFoot}>disagreement σ {triggers.disagreement_stddev} · escalation required</Text>
+            </View>
+          ) : null}
 
-              {(triggers?.should_debate || consensus.score.needs_debate) && !debate ? (
-                <Pressable style={styles.debateBtn} onPress={runDebate} disabled={debateBusy} testID="run-debate">
-                  {debateBusy ? <ActivityIndicator color="#fff" size="small" /> : (
-                    <><Ionicons name="git-branch" size={14} color="#fff" /><Text style={styles.debateT}>Run Council Debate (Critic · Defender · Synthesis)</Text></>
-                  )}
-                </Pressable>
-              ) : null}
+          {(triggers?.should_debate || consensus?.score.needs_debate) && !debate ? (
+            <Pressable style={styles.debateBtn} onPress={runDebate} disabled={debateBusy} testID="run-debate">
+              {debateBusy ? <ActivityIndicator color="#fff" size="small" /> : (
+                <><Ionicons name="git-branch" size={14} color="#fff" /><Text style={styles.debateT}>Run Council Debate (Critic · Defender · Synthesis)</Text></>
+              )}
+            </Pressable>
+          ) : null}
 
-              {debate ? (
+          {debate ? (
                 <View style={styles.debateBox} testID="debate-box">
                   <View style={styles.debateHead}>
                     <Text style={styles.debateLab}>COUNCIL DEBATE</Text>
@@ -349,22 +352,22 @@ export default function NoteDetail() {
                         }]}>{debate.synthesis.synthesis_position}</Text>
                       </View>
                     </View>
-                    <Text style={styles.debateRow}><Text style={styles.debateK}>Resolution: </Text>{debate.synthesis.resolution || "(no resolution parsed)"}</Text>
+                    <Text style={styles.synthRow}><Text style={styles.synthK}>Resolution: </Text>{debate.synthesis.resolution || "(no resolution parsed)"}</Text>
                     {debate.synthesis.conditions.length > 0 ? (
                       <View style={{ marginTop: 4 }}>
-                        <Text style={styles.debateK}>Conditions:</Text>
+                        <Text style={styles.synthK}>Conditions:</Text>
                         {debate.synthesis.conditions.map((c, i) => (
-                          <Text key={i} style={styles.debateRow}>• {c}</Text>
+                          <Text key={i} style={styles.synthRow}>• {c}</Text>
                         ))}
                       </View>
                     ) : null}
-                    <Text style={styles.debateRow}>
-                      <Text style={styles.debateK}>Escalate to human: </Text>
+                    <Text style={styles.synthRow}>
+                      <Text style={styles.synthK}>Escalate to human: </Text>
                       {debate.synthesis.escalate ? "YES" : "NO"}
                       {debate.synthesis.escalate_reason ? ` — ${debate.synthesis.escalate_reason}` : ""}
                     </Text>
-                    <Text style={styles.debateRow}>
-                      <Text style={styles.debateK}>Synthesizer confidence: </Text>{Math.round(debate.synthesis.confidence * 100)}%
+                    <Text style={styles.synthRow}>
+                      <Text style={styles.synthK}>Synthesizer confidence: </Text>{Math.round(debate.synthesis.confidence * 100)}%
                     </Text>
                     <Text style={styles.synthHash}>synthesis_hash · {debate.synthesis_hash.slice(0, 40)}…</Text>
 
@@ -389,8 +392,6 @@ export default function NoteDetail() {
                   </View>
                 </View>
               ) : null}
-            </View>
-          )}
         </View>
 
         <View style={styles.section}>
@@ -676,6 +677,8 @@ const styles = StyleSheet.create({
   turnBody: { color: "#fff", fontSize: fs.sm, lineHeight: 20 },
   turnHash: { color: "#5A5A5F", fontSize: 9, fontFamily: "monospace", marginTop: 2 },
   synthCard: { marginTop: 10, backgroundColor: "#fff", borderRadius: 6, padding: spacing.md, gap: 6 },
+  synthRow: { color: "#0A0A0B", fontSize: fs.sm, lineHeight: 20 },
+  synthK: { color: "#0E7A2A", fontWeight: "800" },
   synthHash: { color: "#8E8E93", fontSize: 9, fontFamily: "monospace", marginTop: 6 },
   ratifyRow: { flexDirection: "row", gap: 8, marginTop: spacing.sm },
   ratifyBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: radius.sm, borderWidth: 1 },

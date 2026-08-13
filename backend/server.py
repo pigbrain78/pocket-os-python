@@ -349,7 +349,10 @@ async def compute_debate_triggers(
 
     return {
         "triggers": triggers,
-        "should_debate": len(triggers) > 0,
+        # `novel_decision` on its own is not enough to force a debate — it only escalates
+        # when paired with another signal. This prevents every fresh capture from triggering.
+        "should_debate": len([t for t in triggers if t["kind"] != "novel_decision"]) > 0
+                          or len(triggers) >= 2,
         "disagreement_stddev": disagreement,
     }
 

@@ -1,0 +1,44 @@
+{
+  "summary": "Phase 3 Council Debate Engine tested end-to-end (backend + mobile web preview). Backend: 10/11 passed, 1 skipped (bland-note 'no triggers' path is unreachable because every new note produces novel concepts that fire `novel_decision`). Frontend: Convene → Debate Triggers → Run Council Debate → Ratify → Reject flows all work; testIDs render. TWO real defects identified: (1) `debateRow` uses white text on a white `synthCard` background, so the SYNTHESIS PROPOSAL fields (Resolution, Escalate to human, Synthesizer confidence, and the • Conditions items) render invisibly. Labels are green (`debateK`) so users see empty labels only. (2) The whole consensus/debate render block is gated on `!consensus ? … : (…)`; even though the note page auto-loads /debate/latest on mount, the debate UI never appears on revisit until the user re-clicks Convene, so the spec statement 'revisiting the note shows the RATIFIED state without re-running the debate' does not hold. Ledger verify remains verified=true after debate_triggered, debate_turn_critic/defender, synthesis_proposed, synthesis_ratified events. Ratification correctly rebinds decisions with reasoning_source='synthesis' and reasoning_synthesis_id set; DNA verified=true after ratify.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/notes/{id}/debate/triggers", "issue": "`novel_decision` trigger fires for essentially every new note (LLM extracts unique concepts, no prior note shares them), so the 'no triggers -> 400 debate' path in POST /notes/{id}/council/debate is unreachable in practice for freshly captured notes. The user spec's 'i like coffee in the morning' example still fires novel_decision. Consider excluding novel_decision alone from should_debate, or requiring novel_decision + another signal."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SynthesisProposal card", "issue": "styles.debateRow uses color '#fff' but is rendered inside styles.synthCard which has backgroundColor '#fff'. Resolution, Escalate value, Synthesizer confidence value and each Conditions bullet are therefore white-on-white and unreadable. Only the green debateK labels are visible. Fix: give the synth card its own dark-on-white row style (e.g. color: '#111'). Reference: /app/frontend/app/note/[id].tsx:352-368, styles at :649.", "testID": "synthesis-proposal", "priority": "HIGH"},
+      {"component": "Debate revisit", "issue": "Debate box is nested inside `{!consensus ? subDim : (<View style={consBox}>…debate…</View>)}`. On note revisit, GET /debate/latest is called and stored into `debate` state, but the containing block requires `consensus` to be truthy first. Result: a previously ratified debate is invisible on revisit until the user clicks Convene again. Fix: render `debate` outside the consensus gate, or auto-fetch latest consensus in load(). Reference: /app/frontend/app/note/[id].tsx:241-393.", "testID": "debate-box", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "note/[id]", "issues": ["Turn card body text (`turnBody`) inside dark card is fine, but the synth proposal card (white bg) inherits `debateRow` white color -> invisible content."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_debate.py",
+    "/app/test_reports/pytest/debate_results.xml"
+  ],
+  "action_items": [
+    "Fix white-on-white bug: add a `synthRow` (or override) with dark text color for lines 352-368 in /app/frontend/app/note/[id].tsx.",
+    "Hoist the debate-box render outside the `!consensus` gate so revisiting a ratified note shows the RATIFIED state without clicking Convene again — either always render debate box when `debate` is set, or fetch latest consensus in `load()`.",
+    "(Optional) Adjust compute_debate_triggers so `novel_decision` alone does not set should_debate=True; require it to combine with another signal. Currently every fresh note triggers a debate.",
+    "Verify Gemini synthesizer output is being displayed for ratified/rejected debates — with the color fix above, ensure resolution/conditions are readable."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2343 lines — recommend splitting Council/Debate/DNA into their own modules (routes/council.py, routes/debate.py, services/dna.py).",
+    "compute_debate_triggers: novel_decision uses concept overlap and will fire for almost every new note captured with LLM-extracted concepts; consider a minimum-overlap threshold or exclude from should_debate.",
+    "Frontend note/[id].tsx: the debate-box + synthesis-proposal are nested inside the consensus render branch, coupling two independent lifecycles; refactor into a separate component/render path."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_debate.py (new, 11 tests)"
+  ],
+  "success_rate": {"backend": "91% (10/11, 1 skipped)", "frontend": "80% (core flows pass; 2 rendering/gating bugs)"},
+  "seed_data_creation": "Created 2 TEST_ bland notes and 1 TEST_ decision on the governance note during ratification test. Existing seeded notes were used for governance/debate flows.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend debate/ratify/reject/ledger flow is solid. Two frontend fixes required: (a) synthesis proposal white-on-white text at note/[id].tsx line 649 (debateRow color '#fff' inside white synthCard); (b) debate rendering is gated on consensus being loaded, so /debate/latest auto-load never surfaces on revisit. Both are UI-only fixes. Backend tests live at /app/backend/tests/test_debate.py; run with `pytest backend/tests/test_debate.py -v`. Runtime ~90s due to sequential LLM turns (Claude 4.6 → GPT-5.4 → Gemini 3 Flash).",
+  "rca_of_issue": "Bug 1 (white-on-white): styles.debateRow was written to render on the dark debate-box background where color '#fff' is correct. When the synthCard (white bg) was later added inside the debate box, it re-used debateRow's text style, producing invisible content. RCA: shared text style crosses two visually distinct containers. Mitigation: introduce a dedicated `synthProposalRow` with color '#111' (or refactor to pass color via prop). Bug 2 (debate not visible on revisit): the JSX puts the debate-box + synthesis inside the `else` branch of `{!consensus ? placeholder : <consBox>…debate…</consBox>}`. Because `load()` only sets `debate` (not `consensus`), the branch never activates on remount. RCA: coupling of two independent server records in one conditional. Mitigation: render the debate block based on `debate` truthiness independently of `consensus`, or seed consensus by fetching latest consensus record in `load()`."
+}

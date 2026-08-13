@@ -1,0 +1,27 @@
+{
+  "summary": "Phase 3 frontend re-verification. Both HIGH-priority frontend fixes are confirmed working. FIX #1 (white-on-white synthesis): all body rows now render with color rgb(10,10,11) on rgb(255,255,255) white synthCard background — 'Resolution:', bullet 'Conditions:', 'Escalate to human:', and 'Synthesizer confidence: 90%' are fully readable, with green synthK labels (rgb(14,122,42)) as designed. FIX #2 (debate-box on revisit): on FIRST load of /note/fe261fcd-0d6f-41de-a80c-df5dc1ee23e6 (no Convene click), both data-testid='debate-box' and data-testid='synthesis-proposal' render immediately from GET /notes/{id}/debate/latest — REJECTED badge shows, all 3 turns and synthesis card visible. FIX #3 (backend novel_decision downweight): verified in code at /app/backend/server.py:350-355 — should_debate = (any non-novel_decision trigger present) OR (>=2 triggers total). Regression: after clicking Convene on the same note, 5 consensus verdicts render (UNCERTAIN score 1.41), debate-triggers card renders with 5 chips, and debate-box + synthesis-proposal persist alongside consensus — the ternary refactor (siblings out of the !consensus gate) did not break the consensus branch.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_debate.py",
+    "/app/test_reports/pytest/debate_results.xml",
+    "/app/test_reports/iteration_1.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is still 2347 lines — recommend eventual split into routes/council.py, routes/debate.py, services/dna.py (deferred, not blocking).",
+    "note/[id].tsx is ~691 lines — the debate/synthesis block could be extracted into <DebateBox note={...} /> to keep the note screen lean."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not_re-run (verified in code + prior iteration_1)", "frontend": "100% (both HIGH fixes verified; consensus regression passes)"},
+  "seed_data_creation": "None. Reused existing seeded governance note fe261fcd-0d6f-41de-a80c-df5dc1ee23e6 which already has a rejected debate record.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both HIGH-priority frontend defects from iteration_1 are fixed. synthRow/synthK styles at /app/frontend/app/note/[id].tsx:680-681 render dark text on the white synth card. The debate-box + synthesis-proposal are now rendered as siblings of the !consensus? placeholder gate (lines 303-394), so /debate/latest auto-load appears on first visit. Backend downweight for novel_decision is at server.py:350-355. If future work adds more debate UI, keep the render outside the consensus ternary. Login flow tip: [data-testid=login-submit] sometimes needs scroll_into_view_if_needed() + short wait before force click; keyboard Enter did not submit the form in this Expo web preview.",
+  "rca_of_issue": "N/A — both bugs resolved. FIX #1 root cause was a shared debateRow style used across a dark parent (debateBox) and a white child (synthCard); mitigation was a dedicated synthRow with color #0A0A0B. FIX #2 root cause was JSX gating debate rendering inside the else branch of {!consensus ? placeholder : consBox}; mitigation was hoisting the triggers/debate-btn/debate-box blocks out of the ternary so they render whenever their own state is populated, independent of consensus."
+}
