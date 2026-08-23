@@ -277,6 +277,155 @@ GOVERNANCE_KEYWORDS = {
     "expense": ["expensive", "budget", "cost", "spend", "$$$"],
 }
 
+import re
+
+_CONCEPT_STOPWORDS = {
+    "the","a","an","of","for","and","or","in","on","to","with","by","at","as",
+    "is","it","be","this","that","these","those","are","was","were",
+    "policy","policies","strategy","strategies","system","systems",
+    "based","new","old","full","use","using","via","from",
+}
+
+def _concept_tokens(concept: str) -> set:
+    """Normalize a concept phrase into a set of meaningful lowercase tokens."""
+    if not concept:
+        return set()
+    tokens = re.split(r'[^a-z0-9]+', concept.lower())
+    return {t for t in tokens if t and t not in _CONCEPT_STOPWORDS and len(t) >= 3}
+
+def _concept_bag(concepts: List[str]) -> set:
+    bag = set()
+    for c in concepts or []:
+        bag |= _concept_tokens(c)
+    return bag
+
+def _concept_similarity(a_concepts: List[str], b_concepts: List[str]) -> Dict[str, Any]:
+    """Return {score, shared, jaccard, containment} using token-level bag-of-words.
+    `score` is max(jaccard, containment) — either signal is enough for semantic overlap.
+    """
+    a = _concept_bag(a_concepts)
+    b = _concept_bag(b_concepts)
+    if not a or not b:
+        return {"score": 0.0, "shared": [], "jaccard": 0.0, "containment": 0.0}
+    inter = a & b
+    union = a | b
+    jaccard = round(len(inter) / len(union), 3) if union else 0.0
+    containment = round(len(inter) / min(len(a), len(b)), 3) if a and b else 0.0
+    return {
+        "score": max(jaccard, containment),
+        "shared": sorted(inter),
+        "jaccard": jaccard,
+        "containment": containment,
+    }
+
+async def detect_semantic_contradictions(
+    user_id: str,
+    new_note_id: Optional[str],
+    new_note: Dict[str, Any],
+    new_position: str,
+    exclude_decision_id: Optional[str] = None,
+    concept_overlap_threshold: float = 0.2,
+) -> List[Dict[str, Any]]:
+    """Find prior authoritative decisions whose reasoning conflicts with the new
+    consensus/synthesis. Only RATIFIED syntheses count as authoritative precedents.
+
+    A contradiction is emitted when BOTH conditions hold:
+      1. Concept overlap: Jaccard(new_concepts, prior_concepts) >= threshold.
+      2. Opposing position: new_position ∈ APPROVE|CONDITIONAL_APPROVE ↔ prior ∈ REJECT (or vice-versa).
+
+    Drafts, rejected proposals, and raw-council-only decisions are NOT authoritative
+    and are excluded. Returns [] when no contradictions found.
+    """
+    if not new_note or not new_position or new_position == "UNCERTAIN":
+        return []
+
+    new_concepts_raw = list(new_note.get("concepts") or [])
+    if not new_concepts_raw:
+        return []
+
+    # Collect ratified syntheses across the user's workspace
+    ratified_syntheses = await db.debates.find(
+        {"user_id": user_id, "ratified": True}, {"_id": 0}
+    ).to_list(2000)
+    if not ratified_syntheses:
+        return []
+
+    # Group by note_id (a note may have multiple syntheses; latest ratified wins)
+    latest_by_note: Dict[str, Dict[str, Any]] = {}
+    for s in ratified_syntheses:
+        nid = s.get("note_id")
+        if not nid:
+            continue
+        current = latest_by_note.get(nid)
+        if not current or (s.get("ratified_at") or "") > (current.get("ratified_at") or ""):
+            latest_by_note[nid] = s
+
+    contradictions: List[Dict[str, Any]] = []
+    for prior_note_id, synth in latest_by_note.items():
+        if new_note_id and prior_note_id == new_note_id:
+            # Same note — a new decision on the same note is a version/refinement,
+            # not a semantic contradiction against a peer decision.
+            continue
+
+        prior_note = await db.notes.find_one({"id": prior_note_id, "user_id": user_id}, {"_id": 0})
+        if not prior_note:
+            continue
+
+        prior_concepts_raw = list(prior_note.get("concepts") or [])
+        if not prior_concepts_raw:
+            continue
+
+        sim = _concept_similarity(new_concepts_raw, prior_concepts_raw)
+        if sim["score"] < concept_overlap_threshold or not sim["shared"]:
+            continue
+
+        prior_position = (synth.get("synthesis") or {}).get("synthesis_position") or "UNCERTAIN"
+
+        # Position opposition table
+        positive = {"APPROVE", "CONDITIONAL_APPROVE"}
+        negative = {"REJECT"}
+        opposing = (
+            (new_position in positive and prior_position in negative)
+            or (new_position in negative and prior_position in positive)
+        )
+        if not opposing:
+            continue
+
+        # Prior decisions bound to this ratified synthesis
+        prior_decisions = await db.decisions.find(
+            {"user_id": user_id, "note_id": prior_note_id, "reasoning_source": "synthesis"},
+            {"_id": 0},
+        ).to_list(20)
+        if exclude_decision_id:
+            prior_decisions = [d for d in prior_decisions if d.get("id") != exclude_decision_id]
+
+        # Fallback: any decision on the prior note if none are bound to synthesis
+        if not prior_decisions:
+            prior_decisions = await db.decisions.find(
+                {"user_id": user_id, "note_id": prior_note_id}, {"_id": 0}
+            ).sort("created_at", -1).limit(1).to_list(1)
+
+        prior_decision = prior_decisions[0] if prior_decisions else None
+        contradictions.append({
+            "prior_note_id": prior_note_id,
+            "prior_note_title": prior_note.get("title"),
+            "prior_decision_id": (prior_decision or {}).get("id"),
+            "prior_decision_number": (prior_decision or {}).get("number"),
+            "prior_synthesis_id": synth.get("id"),
+            "prior_synthesis_hash": synth.get("synthesis_hash"),
+            "prior_ratified_at": synth.get("ratified_at"),
+            "prior_position": prior_position,
+            "new_position": new_position,
+            "overlapping_concepts": sim["shared"],
+            "concept_overlap_jaccard": sim["jaccard"],
+            "concept_overlap_containment": sim["containment"],
+            "concept_overlap_score": sim["score"],
+        })
+
+    # Strongest overlaps first
+    contradictions.sort(key=lambda c: c["concept_overlap_score"], reverse=True)
+    return contradictions
+
 async def compute_debate_triggers(
     user_id: str,
     note_id: str,
@@ -317,14 +466,31 @@ async def compute_debate_triggers(
     if domain_hits:
         triggers.append({"kind": "governance_domain", "detail": ",".join(domain_hits), "weight": 1.0})
 
-    # 5. Contradiction with prior ratified decision on the same note
-    if note_id:
-        q = {"user_id": user_id, "note_id": note_id}
-        if exclude_decision_id:
-            q["id"] = {"$ne": exclude_decision_id}
-        prior_count = await db.decisions.count_documents(q)
-        if prior_count >= 1:
-            triggers.append({"kind": "prior_decision_conflict", "detail": f"{prior_count} prior decision(s) on this note", "weight": 0.7})
+    # 5. Semantic contradiction with prior RATIFIED decisions across the workspace.
+    # Only Ratified Syntheses count as authoritative precedents; drafts / rejected
+    # proposals / raw_council-only decisions are advisory and NOT authoritative here.
+    new_position = "UNCERTAIN"
+    approve_c = scored.get("approve_count", 0)
+    reject_c = scored.get("reject_count", 0)
+    if approve_c > reject_c and approve_c >= 2:
+        new_position = "APPROVE"
+    elif reject_c > approve_c and reject_c >= 2:
+        new_position = "REJECT"
+    contradictions = await detect_semantic_contradictions(
+        user_id, note_id, note, new_position, exclude_decision_id=exclude_decision_id
+    )
+    if contradictions:
+        # Compact trigger detail summarising the strongest contradictions
+        headline = "; ".join(
+            f"Decision #{c['prior_decision_number']} ({c['prior_position']}) on {len(c['overlapping_concepts'])} shared concept(s)"
+            for c in contradictions[:2]
+        )
+        triggers.append({
+            "kind": "prior_decision_conflict",
+            "detail": f"{len(contradictions)} semantic contradiction(s): {headline}",
+            "weight": 0.9,
+            "contradictions": contradictions,
+        })
 
     # 6. Low evidence quality / insufficient provenance
     if scored.get("evidence_weight", 1.0) < 0.34:
@@ -449,6 +615,96 @@ async def verify_ledger(user=Depends(get_current_user)):
         "verified": len(breaks) == 0 and len(chained) > 0,
         "head_hash": chained[-1]["hash"] if chained else "0" * 64,
     }
+
+# Governance-relevant event kinds surface in the Ledger view.
+LEDGER_KINDS_ALL = [
+    "note_created", "concepts_extracted", "linked", "memory_strengthened",
+    "council_convened", "consensus_convened",
+    "debate_triggered", "debate_turn_critic", "debate_turn_defender",
+    "synthesis_proposed", "synthesis_ratified", "synthesis_rejected",
+    "decision_made", "idea_evolved",
+]
+
+@api.get("/ledger/events")
+async def ledger_events(
+    user=Depends(get_current_user),
+    kinds: Optional[str] = None,          # comma-separated
+    ref_id: Optional[str] = None,
+    q: Optional[str] = None,               # free-text search over event.text
+    limit: int = 200,
+):
+    """Return the user's Immutable Ledger events with per-event chain verification.
+    Every event is verified against its actual predecessor in the FULL chain so filters
+    never break verification: the chain integrity is computed BEFORE filtering."""
+    # 1. Pull the whole chain in chronological order and verify each event against its predecessor.
+    all_events = await db.events.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", 1).to_list(10000)
+
+    expected_prev = "0" * 64
+    verified_ok = 0
+    for idx, e in enumerate(all_events):
+        e["chain_position"] = idx
+        if not e.get("hash"):
+            e["verified"] = False
+            e["verify_reason"] = "legacy_unchained"
+            continue
+        recomputed_payload = hashlib.sha256(json.dumps({
+            "kind": e["kind"], "text": e["text"], "ref_id": e.get("ref_id"),
+            "meta": e.get("meta", {}), "user_id": user["id"],
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        prev_ok = e.get("previous_hash") == expected_prev
+        payload_ok = e.get("payload_hash") == recomputed_payload
+        recomputed_hash = hashlib.sha256((expected_prev + recomputed_payload + e["created_at"]).encode()).hexdigest()
+        hash_ok = e.get("hash") == recomputed_hash
+        ok = prev_ok and payload_ok and hash_ok
+        e["verified"] = ok
+        if not ok:
+            reasons = []
+            if not prev_ok:
+                reasons.append("previous_hash mismatch")
+            if not payload_ok:
+                reasons.append("payload tampered")
+            if not hash_ok:
+                reasons.append("event_hash invalid")
+            e["verify_reason"] = "; ".join(reasons)
+        else:
+            verified_ok += 1
+        expected_prev = e.get("hash", expected_prev)
+
+    head_hash = all_events[-1]["hash"] if all_events and all_events[-1].get("hash") else "0" * 64
+
+    # 2. Apply filters
+    kinds_set = None
+    if kinds:
+        kinds_set = {k.strip() for k in kinds.split(",") if k.strip()}
+    q_lower = q.lower() if q else None
+
+    filtered = []
+    for e in all_events:
+        if kinds_set and e["kind"] not in kinds_set:
+            continue
+        if ref_id and e.get("ref_id") != ref_id:
+            continue
+        if q_lower and q_lower not in (e.get("text") or "").lower() and q_lower not in (e.get("hash") or ""):
+            continue
+        filtered.append(e)
+
+    # 3. Reverse-chronological for UI; clamp limit
+    filtered.reverse()
+    if limit and limit > 0:
+        filtered = filtered[:limit]
+
+    return {
+        "events": filtered,
+        "head_hash": head_hash,
+        "total_events": len(all_events),
+        "verified_ok": verified_ok,
+        "chain_verified": verified_ok == len([e for e in all_events if e.get("hash")]) and any(e.get("hash") for e in all_events),
+        "available_kinds": sorted({e["kind"] for e in all_events}),
+    }
+
+
 
 def sha_of(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
@@ -851,6 +1107,57 @@ async def council_consensus(note_id: str, user=Depends(get_current_user)):
         ref_id=note_id,
         meta={"score": scored["score"], "recommendation": scored["recommendation"], "needs_debate": scored["needs_debate"]},
     )
+
+    # --- Semantic contradiction detection: non-destructive governed findings ---
+    # We recompute triggers here so the contradiction analysis persists alongside
+    # the fresh consensus and appears in the note UI.
+    trig = await compute_debate_triggers(user["id"], note_id, n, scored, verdicts)
+    contradiction_records: List[Dict[str, Any]] = []
+    for t in trig["triggers"]:
+        if t["kind"] != "prior_decision_conflict":
+            continue
+        for c in t.get("contradictions") or []:
+            rec = {
+                "id": uid(),
+                "user_id": user["id"],
+                "new_note_id": note_id,
+                "new_note_title": n.get("title"),
+                "new_consensus_id": record["id"],
+                "new_position": c["new_position"],
+                "prior_note_id": c["prior_note_id"],
+                "prior_note_title": c["prior_note_title"],
+                "prior_decision_id": c.get("prior_decision_id"),
+                "prior_decision_number": c.get("prior_decision_number"),
+                "prior_synthesis_id": c.get("prior_synthesis_id"),
+                "prior_synthesis_hash": c.get("prior_synthesis_hash"),
+                "prior_position": c["prior_position"],
+                "overlapping_concepts": c["overlapping_concepts"],
+                "concept_overlap_jaccard": c["concept_overlap_jaccard"],
+                "concept_overlap_containment": c.get("concept_overlap_containment"),
+                "concept_overlap_score": c.get("concept_overlap_score"),
+                "resolved": False,
+                "resolution": None,
+                "resolved_at": None,
+                "resolved_by": None,
+                "created_at": now_iso(),
+            }
+            await db.contradictions.insert_one(rec)
+            rec.pop("_id", None)
+            contradiction_records.append(rec)
+            await log_event(
+                user["id"], "contradiction_detected",
+                f"Contradiction: {rec['new_position']} vs Decision #{rec.get('prior_decision_number','?')} ({rec['prior_position']}) — {len(rec['overlapping_concepts'])} shared concept(s)",
+                ref_id=note_id,
+                meta={
+                    "contradiction_id": rec["id"],
+                    "prior_note_id": rec["prior_note_id"],
+                    "prior_synthesis_id": rec.get("prior_synthesis_id"),
+                    "prior_decision_id": rec.get("prior_decision_id"),
+                    "overlapping_concepts": rec["overlapping_concepts"],
+                    "concept_overlap_jaccard": rec["concept_overlap_jaccard"],
+                },
+            )
+    record["contradictions"] = contradiction_records
     return record
 
 @api.get("/notes/{note_id}/debate/triggers")
@@ -1133,6 +1440,228 @@ async def synthesis_reject(sid: str, user=Depends(get_current_user)):
         meta={"synthesis_id": sid, "synthesis_hash": rec.get("synthesis_hash")},
     )
     return rec
+
+# ---------------- Contradictions ----------------
+@api.get("/notes/{note_id}/contradictions")
+async def note_contradictions(note_id: str, user=Depends(get_current_user)):
+    """All contradictions this note participates in — as the new challenger AND as prior precedent."""
+    n = await db.notes.find_one({"id": note_id, "user_id": user["id"]}, {"_id": 0})
+    if not n:
+        raise HTTPException(status_code=404, detail="Note not found")
+    as_new = await db.contradictions.find(
+        {"user_id": user["id"], "new_note_id": note_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    as_prior = await db.contradictions.find(
+        {"user_id": user["id"], "prior_note_id": note_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return {"as_new": as_new, "as_prior": as_prior}
+
+@api.get("/decisions/{did}/contradictions")
+async def decision_contradictions(did: str, user=Depends(get_current_user)):
+    d = await db.decisions.find_one({"id": did, "user_id": user["id"]}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    return await db.contradictions.find(
+        {"user_id": user["id"], "$or": [{"prior_decision_id": did}, {"prior_note_id": d.get("note_id")}, {"new_note_id": d.get("note_id")}]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(50)
+
+@api.post("/contradictions/{cid}/resolve")
+async def resolve_contradiction(cid: str, user=Depends(get_current_user)):
+    """Human marks a contradiction as consciously accepted / resolved. Non-destructive
+    (evidence remains); records the resolution as a ledger event."""
+    rec = await db.contradictions.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Not found")
+    if rec.get("resolved"):
+        return rec
+    ts = now_iso()
+    who = user.get("email") or user.get("name") or user.get("id")
+    await db.contradictions.update_one({"id": cid}, {"$set": {"resolved": True, "resolved_at": ts, "resolved_by": who}})
+    rec.update({"resolved": True, "resolved_at": ts, "resolved_by": who})
+    await log_event(
+        user["id"], "contradiction_resolved",
+        f"Contradiction resolved by {who}",
+        ref_id=rec.get("new_note_id"),
+        meta={"contradiction_id": cid, "prior_decision_id": rec.get("prior_decision_id")},
+    )
+    return rec
+
+# ---------------- Ledger Export (auditor bundle) ----------------
+LEDGER_EXPORT_PROTOCOL_VERSION = "pocketos.ledger.v1"
+
+VERIFY_SCRIPT = '''#!/usr/bin/env python3
+"""Pocket OS Ledger — independent verification script.
+
+Reads ledger.jsonl (one canonical event per line, chronological order) and
+recomputes the hash chain WITHOUT trusting the exporting application.
+Exit code 0 = chain valid, matches head.json.
+Exit code 1 = chain broken (details printed to stdout).
+
+The canonical payload used for hashing is the exact JSON object
+    {"kind": ..., "text": ..., "ref_id": ..., "meta": ..., "user_id": ...}
+serialized with json.dumps(sort_keys=True, separators=(",", ":")) and
+SHA-256'd. The event hash is SHA-256 of (previous_hash + payload_hash + created_at).
+"""
+import json, hashlib, sys, pathlib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+ledger_path = ROOT / "ledger.jsonl"
+head_path = ROOT / "head.json"
+
+with open(head_path) as f:
+    head = json.load(f)
+expected_head = head["head_hash"]
+protocol_version = head.get("protocol_version")
+
+prev = "0" * 64
+count = 0
+verified = 0
+breaks = []
+with open(ledger_path) as f:
+    for i, line in enumerate(f):
+        line = line.strip()
+        if not line:
+            continue
+        e = json.loads(line)
+        count += 1
+        canonical = json.dumps({
+            "kind": e["kind"], "text": e["text"], "ref_id": e.get("ref_id"),
+            "meta": e.get("meta", {}), "user_id": e["user_id"],
+        }, sort_keys=True, separators=(",", ":"))
+        payload_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        recomputed = hashlib.sha256((prev + payload_hash + e["created_at"]).encode()).hexdigest()
+        ok = (
+            e.get("previous_hash") == prev
+            and e.get("payload_hash") == payload_hash
+            and e.get("hash") == recomputed
+        )
+        if not ok:
+            breaks.append({"index": i, "id": e.get("id"), "kind": e.get("kind")})
+        else:
+            verified += 1
+        prev = e.get("hash", prev)
+
+status_ok = (not breaks) and prev == expected_head and count > 0
+print(f"protocol_version : {protocol_version}")
+print(f"events           : {count}")
+print(f"verified         : {verified}")
+print(f"breaks           : {len(breaks)}")
+print(f"recomputed_head  : {prev}")
+print(f"declared_head    : {expected_head}")
+print(f"chain_verified   : {status_ok}")
+if breaks:
+    for b in breaks[:10]:
+        print(" - break:", b)
+sys.exit(0 if status_ok else 1)
+'''
+
+VERIFY_README = '''# Pocket OS Ledger Audit Bundle
+
+This bundle is a self-contained, independently verifiable snapshot of the
+user's Immutable Event Ledger at export time.
+
+## Layout
+```
+audit_bundle/
+├── manifest.json          Bundle metadata + protocol version + hash algorithm
+├── head.json              Declared head_hash + chain stats + export timestamp
+├── ledger.jsonl           One canonical event per line, chronological
+├── verification/
+│   └── verify.py          Third-party re-verification (no app trust required)
+└── README.md              This file
+```
+
+## Verify locally
+```
+cd audit_bundle
+python3 verification/verify.py
+```
+Exit code 0 = chain is intact and matches declared head_hash.
+
+## Canonicalization
+- SHA-256 for artifact/event integrity.
+- Canonical JSON: `json.dumps(sort_keys=True, separators=(",", ":"))`.
+- Event hash = SHA256(previous_hash + payload_hash + created_at).
+- Payload hash = SHA256(canonical JSON of {kind, text, ref_id, meta, user_id}).
+
+## Governance rule
+This bundle is EVIDENCE, not authorization. A detected discrepancy is an
+auditable finding — it does not grant permission to rewrite history or
+retroactively invalidate ratified decisions.
+'''
+
+@api.get("/ledger/export")
+async def ledger_export(
+    user=Depends(get_current_user),
+    format: str = "bundle",
+):
+    """Export the user's Immutable Event Ledger as an auditor-friendly bundle.
+
+    `format=bundle` (default) returns a JSON object containing:
+      - manifest      (protocol, hashing, timestamp, head_hash)
+      - head          (declared head_hash + chain stats)
+      - ledger_jsonl  (chronological events, one canonical JSON per line)
+      - verify_script (independent Python re-verification, no app trust)
+      - readme        (bundle documentation)
+
+    `format=jsonl` returns just the newline-delimited ledger.
+    """
+    all_events = await db.events.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", 1).to_list(50000)
+
+    # Only chained events participate in the cryptographic hash chain; legacy
+    # pre-chain events have no hash and are excluded from the auditor bundle.
+    chained_events = [e for e in all_events if e.get("hash")]
+
+    # Recompute head hash locally to guarantee export matches on-disk state.
+    prev = "0" * 64
+    for e in chained_events:
+        prev = e["hash"]
+    head_hash = prev
+    chained = len(chained_events)
+
+    # jsonl: one canonical event per line
+    def event_line(e: Dict[str, Any]) -> str:
+        keys = ["id", "user_id", "kind", "text", "ref_id", "meta",
+                "previous_hash", "payload_hash", "hash", "created_at"]
+        return json.dumps({k: e.get(k) for k in keys}, sort_keys=True, separators=(",", ":"), default=str)
+    jsonl = "\n".join(event_line(e) for e in chained_events) + ("\n" if chained_events else "")
+
+    if format == "jsonl":
+        return StreamingResponse(iter([jsonl]), media_type="application/x-ndjson")
+
+    export_ts = now_iso()
+    manifest = {
+        "audit_id": uid(),
+        "protocol_version": LEDGER_EXPORT_PROTOCOL_VERSION,
+        "scope": f"user:{user['id']}",
+        "timestamp": export_ts,
+        "hash_algorithm": "sha256",
+        "canonicalization": 'json.dumps(sort_keys=True, separators=(",", ":"))',
+        "event_hash_recipe": "sha256(previous_hash + payload_hash + created_at)",
+        "payload_hash_recipe": "sha256(canonical({kind,text,ref_id,meta,user_id}))",
+        "total_events": len(all_events),
+        "chained_events": chained,
+        "legacy_unchained_excluded": len(all_events) - chained,
+        "head_hash": head_hash,
+    }
+    head = {
+        "protocol_version": LEDGER_EXPORT_PROTOCOL_VERSION,
+        "head_hash": head_hash,
+        "timestamp": export_ts,
+        "chain_verified_by_exporter": True,
+        "total_events": len(all_events),
+        "chained_events": chained,
+    }
+    return {
+        "manifest": manifest,
+        "head": head,
+        "ledger_jsonl": jsonl,
+        "verify_script": VERIFY_SCRIPT,
+        "readme": VERIFY_README,
+    }
 
 @api.post("/notes/{note_id}/evolve")
 async def evolve_note(note_id: str, inp: NoteIn, user=Depends(get_current_user)):

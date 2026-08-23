@@ -1,0 +1,14 @@
+{
+  "audit_id": "a673f6be-ae8b-488a-937b-d39a8210380e",
+  "protocol_version": "pocketos.ledger.v1",
+  "scope": "user:53549563-1be5-40d3-b49e-434484cc29c3",
+  "timestamp": "2026-08-23T12:21:13.493526+00:00",
+  "hash_algorithm": "sha256",
+  "canonicalization": "json.dumps(sort_keys=True, separators=(\",\", \":\"))",
+  "event_hash_recipe": "sha256(previous_hash + payload_hash + created_at)",
+  "payload_hash_recipe": "sha256(canonical({kind,text,ref_id,meta,user_id}))",
+  "total_events": 191,
+  "chained_events": 130,
+  "legacy_unchained_excluded": 61,
+  "head_hash": "f2bdd1ff755bca8e48827ae502897c8ded59c757afccca8b12835f87999ace8b"
+}

@@ -25,6 +25,25 @@ type DebateTurn = { role: string; provider: string; model: string; against?: str
 type Synthesis = { resolution: string; conditions: string[]; escalate: boolean; escalate_reason: string; confidence: number; synthesis_position: string };
 type DebateRecord = { id: string; note_id: string; consensus_id: string; triggers: Trigger[]; disagreement_stddev: number; majority: string; turns: DebateTurn[]; synthesis: Synthesis; synthesis_hash: string; ratified: boolean; ratified_at?: string; ratified_by?: string; rejected: boolean; rejected_at?: string; rejected_by?: string; created_at: string };
 type TriggerResp = { triggers: Trigger[]; should_debate: boolean; disagreement_stddev: number; consensus_id?: string | null };
+type Contradiction = {
+  id: string;
+  new_note_id: string;
+  new_position: string;
+  prior_note_id: string;
+  prior_note_title?: string;
+  prior_decision_id?: string;
+  prior_decision_number?: number;
+  prior_position: string;
+  prior_synthesis_hash?: string;
+  prior_ratified_at?: string;
+  overlapping_concepts: string[];
+  concept_overlap_score?: number;
+  concept_overlap_jaccard?: number;
+  concept_overlap_containment?: number;
+  resolved: boolean;
+  resolved_by?: string;
+  created_at: string;
+};
 
 const TRIGGER_LABELS: Record<string, { label: string; color: string }> = {
   low_confidence: { label: "Low confidence", color: "#8A6D00" },
@@ -75,6 +94,7 @@ export default function NoteDetail() {
   const [debateBusy, setDebateBusy] = useState(false);
   const [ratifyBusy, setRatifyBusy] = useState<"ratify" | "reject" | null>(null);
   const [routerBusy, setRouterBusy] = useState(false);
+  const [contradictions, setContradictions] = useState<{ as_new: Contradiction[]; as_prior: Contradiction[] }>({ as_new: [], as_prior: [] });
 
   const load = useCallback(async () => {
     if (!token || !id) return;
@@ -83,6 +103,10 @@ export default function NoteDetail() {
     try {
       const latest = await api<DebateRecord | null>(`/api/notes/${id}/debate/latest`, { token });
       if (latest && latest.id) setDebate(latest);
+    } catch {}
+    try {
+      const cs = await api<{ as_new: Contradiction[]; as_prior: Contradiction[] }>(`/api/notes/${id}/contradictions`, { token });
+      setContradictions(cs);
     } catch {}
   }, [token, id]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -134,6 +158,11 @@ export default function NoteDetail() {
         await Promise.all(data.decisions.map(d => api(`/api/decisions/${d.id}/dna`, { token }).catch(() => {})));
         await load();
       }
+      // Refresh contradictions (consensus may have detected new ones)
+      try {
+        const cs = await api<{ as_new: Contradiction[]; as_prior: Contradiction[] }>(`/api/notes/${id}/contradictions`, { token });
+        setContradictions(cs);
+      } catch {}
     } catch (e: any) { alert(e.message); } finally { setConsensusBusy(false); }
   };
   const runDebate = async () => {
@@ -159,6 +188,13 @@ export default function NoteDetail() {
       const r = await api<DebateRecord>(`/api/synthesis/${debate.id}/reject`, { method: "POST", token });
       setDebate(r);
     } catch (e: any) { alert(e.message); } finally { setRatifyBusy(null); }
+  };
+  const resolveContradiction = async (cid: string) => {
+    try {
+      await api(`/api/contradictions/${cid}/resolve`, { method: "POST", token });
+      const cs = await api<{ as_new: Contradiction[]; as_prior: Contradiction[] }>(`/api/notes/${id}/contradictions`, { token });
+      setContradictions(cs);
+    } catch (e: any) { alert(e.message); }
   };
   const runRouter = async () => {
     setRouterBusy(true);
@@ -393,6 +429,77 @@ export default function NoteDetail() {
                 </View>
               ) : null}
         </View>
+
+        {(contradictions.as_new.length > 0 || contradictions.as_prior.length > 0) ? (
+          <View style={styles.section}>
+            <Text style={styles.sh}>Contradictions</Text>
+            <Text style={styles.subDim}>Semantic conflicts with ratified precedents. Evidence-only; nothing has been rewritten.</Text>
+            {contradictions.as_new.map(c => (
+              <Pressable
+                key={c.id}
+                style={[styles.contraCard, c.resolved && { opacity: 0.55 }]}
+                onPress={() => c.prior_note_id && router.push({ pathname: "/note/[id]", params: { id: c.prior_note_id } })}
+                testID={`contradiction-${c.id}`}
+              >
+                <View style={styles.contraHead}>
+                  <View style={styles.contraChip}>
+                    <Ionicons name="flash-outline" size={11} color="#B41B10" />
+                    <Text style={styles.contraChipT}>
+                      Contradicts {c.prior_decision_number != null ? `Decision #${c.prior_decision_number}` : "prior ratified decision"}
+                    </Text>
+                  </View>
+                  {c.resolved ? (
+                    <View style={styles.contraResolved}>
+                      <Ionicons name="checkmark-circle" size={11} color="#0E7A2A" />
+                      <Text style={styles.contraResolvedT}>Resolved</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Text style={styles.contraTitle} numberOfLines={2}>{c.prior_note_title || "Unnamed prior note"}</Text>
+                <View style={styles.contraPosRow}>
+                  <View style={[styles.miniPos, { backgroundColor: c.new_position === "APPROVE" ? "#DCF7DC" : c.new_position === "REJECT" ? "#FFE9E7" : "#FFF4CC" }]}>
+                    <Text style={[styles.miniPosT, { color: c.new_position === "APPROVE" ? "#0E7A2A" : c.new_position === "REJECT" ? "#B41B10" : "#8A6D00" }]}>THIS · {c.new_position}</Text>
+                  </View>
+                  <Ionicons name="swap-horizontal" size={12} color={colors.muted} />
+                  <View style={[styles.miniPos, { backgroundColor: c.prior_position === "APPROVE" || c.prior_position === "CONDITIONAL_APPROVE" ? "#DCF7DC" : c.prior_position === "REJECT" ? "#FFE9E7" : "#FFF4CC" }]}>
+                    <Text style={[styles.miniPosT, { color: c.prior_position === "APPROVE" || c.prior_position === "CONDITIONAL_APPROVE" ? "#0E7A2A" : c.prior_position === "REJECT" ? "#B41B10" : "#8A6D00" }]}>PRIOR · {c.prior_position}</Text>
+                  </View>
+                </View>
+                <View style={styles.contraConcepts}>
+                  {c.overlapping_concepts.slice(0, 5).map((cc, i) => (
+                    <View key={i} style={styles.contraConcept}><Text style={styles.contraConceptT}>{cc}</Text></View>
+                  ))}
+                </View>
+                <View style={styles.contraFoot}>
+                  <Text style={styles.contraFootT}>overlap {Math.round(((c.concept_overlap_score ?? c.concept_overlap_jaccard) || 0) * 100)}% · jaccard {c.concept_overlap_jaccard} · containment {c.concept_overlap_containment ?? "—"}</Text>
+                  {!c.resolved ? (
+                    <Pressable onPress={() => resolveContradiction(c.id)} hitSlop={8} testID={`contradiction-resolve-${c.id}`}>
+                      <Text style={styles.contraResolveBtn}>Mark resolved</Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.contraResolvedFoot}>by {c.resolved_by}</Text>
+                  )}
+                </View>
+              </Pressable>
+            ))}
+            {contradictions.as_prior.length > 0 ? (
+              <View style={styles.contraPriorBox}>
+                <Text style={styles.contraPriorLab}>THIS NOTE IS CITED AS PRECEDENT BY</Text>
+                {contradictions.as_prior.map(c => (
+                  <Pressable
+                    key={c.id}
+                    style={styles.contraPriorRow}
+                    onPress={() => c.new_note_id && router.push({ pathname: "/note/[id]", params: { id: c.new_note_id } })}
+                    testID={`contradiction-as-prior-${c.id}`}
+                  >
+                    <Ionicons name="arrow-back" size={13} color={colors.muted} />
+                    <Text style={styles.contraPriorT} numberOfLines={1}>Challenged by a newer note ({c.new_position}) · {dayjs(c.created_at).format("MMM D")}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
 
         <View style={styles.section}>
           <View style={styles.rowBetween}>
@@ -687,4 +794,25 @@ const styles = StyleSheet.create({
   ratifyBtnT: { color: "#fff", fontWeight: "800", fontSize: fs.sm },
   ratifiedFoot: { marginTop: spacing.sm, color: "#0E7A2A", fontSize: 11, fontWeight: "700" },
   rejectedFoot: { marginTop: spacing.sm, color: "#B41B10", fontSize: 11, fontWeight: "700" },
+  contraCard: { marginTop: spacing.md, backgroundColor: "#FFF7F5", borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: "#F5C5C0", gap: 6 },
+  contraHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  contraChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: "#FFE9E7" },
+  contraChipT: { color: "#B41B10", fontSize: 11, fontWeight: "800", letterSpacing: 0.3 },
+  contraResolved: { flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 2, backgroundColor: "#DCF7DC", borderRadius: 999 },
+  contraResolvedT: { color: "#0E7A2A", fontSize: 10, fontWeight: "800" },
+  contraTitle: { color: colors.onSurface, fontSize: fs.base, fontWeight: "700", marginTop: 4 },
+  contraPosRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  miniPos: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  miniPosT: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  contraConcepts: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 },
+  contraConcept: { backgroundColor: "#fff", borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: "#F5C5C0" },
+  contraConceptT: { color: "#B41B10", fontSize: 10, fontWeight: "700" },
+  contraFoot: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: "#F5C5C0" },
+  contraFootT: { color: "#8A5350", fontSize: 10, fontFamily: "monospace", flex: 1 },
+  contraResolveBtn: { color: "#0E7A2A", fontSize: 11, fontWeight: "800", textDecorationLine: "underline" },
+  contraResolvedFoot: { color: "#0E7A2A", fontSize: 10, fontWeight: "700" },
+  contraPriorBox: { marginTop: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.sm, padding: spacing.sm },
+  contraPriorLab: { color: colors.muted, fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 4 },
+  contraPriorRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4 },
+  contraPriorT: { color: colors.onSurface, fontSize: fs.sm, flex: 1 },
 });

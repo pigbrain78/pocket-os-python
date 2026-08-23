@@ -49,3 +49,19 @@ Every turn is written to the Immutable Event Ledger as its own hashed event, and
 
 ### New endpoints
 `GET /api/notes/{id}/debate/triggers`, `GET /api/notes/{id}/debate/latest`, `POST /api/notes/{id}/council/debate` (multi-turn), `POST /api/synthesis/{sid}/ratify`, `POST /api/synthesis/{sid}/reject`.
+
+## Round 5 — Contradiction Detection + Auditor Bundle Export (Jun 2026)
+Extended `prior_decision_conflict` from count-based to **semantic contradiction detection**. On every new consensus we compare the new note's concepts against every RATIFIED synthesis in the user's workspace using token-level Jaccard + containment overlap; when overlap exceeds 20% AND positions genuinely oppose (APPROVE/CONDITIONAL_APPROVE ↔ REJECT), the system records a **non-destructive** `contradictions` record + `contradiction_detected` ledger event. Rejected and unratified syntheses are explicitly excluded — only ratified precedents are authoritative. Neither side is mutated.
+
+### New endpoints
+`GET /api/notes/{id}/contradictions`, `GET /api/decisions/{id}/contradictions`, `POST /api/contradictions/{cid}/resolve`, `GET /api/ledger/export`.
+
+### New UI
+- `<note/[id].tsx>` **Contradictions** card between Consensus and Cognitive Router: ⚡ "Contradicts Decision #N" chip, position-swap badges, shared concept chips, overlap/jaccard/containment metrics, tap opens prior note, "Mark resolved" preserves evidence.
+- `<ledger.tsx>` **Export** button in header → downloads a self-contained JSON bundle containing `manifest`, `head`, `ledger.jsonl`, third-party `verify.py`, and `README.md`. Independent verification: recomputes SHA-256 chain against declared head_hash without trusting the app.
+
+### Guarantees
+- 30 backend tests pass (4 new for contradictions + export).
+- Independent verification (`python3 verify.py`) returns exit 0 against a live-exported bundle.
+- Ledger stays verified through all new contradiction/resolution events.
+

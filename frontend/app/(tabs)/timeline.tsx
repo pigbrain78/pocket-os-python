@@ -46,8 +46,14 @@ export default function TimelineScreen() {
   return (
     <SafeAreaView style={styles.c} edges={["top"]} testID="timeline-screen">
       <View style={styles.head}>
-        <Text style={styles.h1}>Timeline</Text>
-        <Text style={styles.sub}>Every thought. Every link. Chronological.</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.h1}>Timeline</Text>
+          <Text style={styles.sub}>Every thought. Every link. Chronological.</Text>
+        </View>
+        <Pressable style={styles.ledgerBtn} onPress={() => router.push("/ledger")} testID="open-ledger">
+          <Ionicons name="shield-checkmark" size={14} color="#fff" />
+          <Text style={styles.ledgerBtnT}>Ledger</Text>
+        </Pressable>
       </View>
       <ScrollView
         contentContainerStyle={styles.s}
@@ -106,7 +112,9 @@ export default function TimelineScreen() {
 
 const styles = StyleSheet.create({
   c: { flex: 1, backgroundColor: colors.surface },
-  head: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.md, backgroundColor: colors.surface },
+  head: { flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.md, backgroundColor: colors.surface },
+  ledgerBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.onSurface, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
+  ledgerBtnT: { color: "#fff", fontWeight: "800", fontSize: fs.sm },
   h1: { fontSize: fs["3xl"], fontWeight: "800", color: colors.onSurface },
   sub: { color: colors.muted, fontSize: fs.base, marginTop: 2 },
   s: { paddingHorizontal: spacing.xl, paddingBottom: 140 },
