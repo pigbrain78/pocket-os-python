@@ -1663,6 +1663,68 @@ async def ledger_export(
         "readme": VERIFY_README,
     }
 
+@api.post("/admin/cleanup-test-notes")
+async def cleanup_test_notes(user=Depends(get_current_user)):
+    """Purge obvious development/test artifacts from this user's workspace WITHOUT
+    touching real captured knowledge. Records the cleanup as a ledger event.
+
+    Targets titles containing recognisably synthetic patterns (coffee test notes,
+    'TEST_' prefixes, etc). Related graph edges, versions, consensus, debates, and
+    contradictions on those notes are removed alongside the notes themselves.
+    """
+    patterns = [
+        r"morning coffee",
+        r"^TEST[_ :]",
+        r"bland (?:coffee|note)",
+        r"^Relax auth for internal",   # my earlier test artifact
+        r"^Skip deploy pipeline",       # test suite artifact
+        r"i like drinking coffee",
+    ]
+    combined = "|".join(patterns)
+    q = {"user_id": user["id"], "$or": [
+        {"title": {"$regex": combined, "$options": "i"}},
+        {"text":  {"$regex": r"i like drinking coffee|bland coffee", "$options": "i"}},
+    ]}
+    to_delete = await db.notes.find(q, {"_id": 0, "id": 1, "title": 1}).to_list(500)
+    ids = [n["id"] for n in to_delete]
+    if ids:
+        # Cascade delete related state (append-only ledger events remain untouched)
+        await db.notes.delete_many({"id": {"$in": ids}, "user_id": user["id"]})
+        await db.note_versions.delete_many({"note_id": {"$in": ids}, "user_id": user["id"]})
+        await db.graph_edges.delete_many({"user_id": user["id"], "$or": [{"src": {"$in": ids}}, {"dst": {"$in": ids}}]})
+        await db.graph_nodes.delete_many({"user_id": user["id"], "kind": "note", "id": {"$in": ids}})
+        await db.council_responses.delete_many({"user_id": user["id"], "note_id": {"$in": ids}})
+        await db.consensus_records.delete_many({"user_id": user["id"], "note_id": {"$in": ids}})
+        await db.debates.delete_many({"user_id": user["id"], "note_id": {"$in": ids}})
+        await db.contradictions.delete_many({"user_id": user["id"], "$or": [{"new_note_id": {"$in": ids}}, {"prior_note_id": {"$in": ids}}]})
+        await db.operations.delete_many({"user_id": user["id"], "note_id": {"$in": ids}})
+        await db.decisions.delete_many({"user_id": user["id"], "note_id": {"$in": ids}})
+
+    # Prune orphan concept nodes/edges that no longer connect to any note.
+    # Concepts are graph_nodes with kind=='concept'; they are authored only via
+    # has_concept edges from notes. If every incident edge is gone, the concept
+    # itself is dead evidence and should be removed to keep AI Shadow honest.
+    orphan_removed = 0
+    concept_nodes = await db.graph_nodes.find(
+        {"user_id": user["id"], "kind": "concept"}, {"_id": 0, "id": 1}
+    ).to_list(2000)
+    for cn in concept_nodes:
+        remaining = await db.graph_edges.count_documents({
+            "user_id": user["id"],
+            "$or": [{"src": cn["id"]}, {"dst": cn["id"]}],
+        })
+        if remaining == 0:
+            await db.graph_nodes.delete_one({"id": cn["id"], "user_id": user["id"]})
+            orphan_removed += 1
+
+    if ids or orphan_removed:
+        await log_event(
+            user["id"], "test_data_cleaned",
+            f"Removed {len(ids)} development/test note(s) + {orphan_removed} orphan concept(s)",
+            meta={"deleted_note_ids": ids, "titles": [n["title"] for n in to_delete], "orphan_concepts_removed": orphan_removed},
+        )
+    return {"deleted": len(ids), "titles": [n["title"] for n in to_delete], "orphan_concepts_removed": orphan_removed}
+
 @api.post("/notes/{note_id}/evolve")
 async def evolve_note(note_id: str, inp: NoteIn, user=Depends(get_current_user)):
     parent = await db.notes.find_one({"id": note_id, "user_id": user["id"]}, {"_id": 0})
@@ -1743,7 +1805,34 @@ async def graph_node(node_id: str, user=Depends(get_current_user)):
 # ---------------- Decisions ----------------
 @api.post("/decisions")
 async def create_decision(inp: DecisionIn, user=Depends(get_current_user)):
+    """Create a decision derived from real system state — no synthetic metrics.
+
+    - referenced_notes = notes sharing at least one concept with the source note
+    - influenced_agents = distinct AI Council agents that produced a verdict on the source note
+    - affected_projects, produced_tasks default to 0 (attributed only when downstream evidence exists)
+    """
     count = await db.decisions.count_documents({"user_id": user["id"]})
+
+    referenced_notes = 0
+    influenced_agents = 0
+    if inp.note_id:
+        src = await db.notes.find_one({"id": inp.note_id, "user_id": user["id"]}, {"_id": 0})
+        if src and src.get("concepts"):
+            referenced_notes = await db.notes.count_documents({
+                "user_id": user["id"],
+                "id": {"$ne": inp.note_id},
+                "concepts": {"$in": src["concepts"]},
+            })
+        # Distinct council agents who reviewed this note (raw + consensus verdicts)
+        raw_agents = await db.council_responses.distinct(
+            "agent", {"user_id": user["id"], "note_id": inp.note_id}
+        )
+        cons = await db.consensus_records.find(
+            {"user_id": user["id"], "note_id": inp.note_id}, {"_id": 0, "verdicts.agent": 1}
+        ).to_list(20)
+        cons_agents = {v["agent"] for r in cons for v in r.get("verdicts", []) if v.get("agent")}
+        influenced_agents = len(set(raw_agents) | cons_agents)
+
     d = {
         "id": uid(),
         "number": count + 1,
@@ -1751,10 +1840,10 @@ async def create_decision(inp: DecisionIn, user=Depends(get_current_user)):
         "title": inp.title,
         "context": inp.context or "",
         "note_id": inp.note_id,
-        "affected_projects": random.randint(3, 14),
-        "produced_tasks": random.randint(8, 60),
-        "referenced_notes": random.randint(4, 40),
-        "influenced_agents": random.randint(1, 5),
+        "affected_projects": 0,          # attributed only when downstream evidence exists
+        "produced_tasks": 0,             # attributed only when downstream evidence exists
+        "referenced_notes": referenced_notes,
+        "influenced_agents": influenced_agents,
         "created_at": now_iso(),
     }
     await db.decisions.insert_one(d)
@@ -2541,7 +2630,13 @@ async def missions(user=Depends(get_current_user)):
 # ---------------- Cognitive DNA ----------------
 @api.get("/cognitive-dna")
 async def cognitive_dna(user=Depends(get_current_user)):
-    """Score user across 6 thinking traits with evidence."""
+    """Score user across 6 thinking traits using ONLY observed behavioral signals.
+
+    Every trait returns: score, confidence (bounded by evidence volume), evidence
+    (2-3 supporting notes), evidence_count, and — where available — a counter_signal
+    from an inverse trait's stronger evidence. This is a DERIVED behavioral model,
+    not a psychological assessment.
+    """
     notes = await db.notes.find({"user_id": user["id"]}, {"_id": 0}).to_list(500)
     decisions_count = await db.decisions.count_documents({"user_id": user["id"]})
     versions_total = await db.note_versions.count_documents({"user_id": user["id"]})
@@ -2555,21 +2650,68 @@ async def cognitive_dna(user=Depends(get_current_user)):
         "Experimentation": ["prototype", "test", "try", "explore", "flutterflow", "experiment"],
         "Risk Management": ["risk", "sandbox", "review", "governance", "provenance", "audit"],
     }
-    text_blob = " ".join((n.get("text", "") + " " + n.get("title", "")).lower() for n in notes)
-    traits = []
+    counter_pairs = {
+        "Architectural": "Experimentation",
+        "Experimentation": "Architectural",
+        "Planning": "Experimentation",
+        "Documentation": "Experimentation",
+        "Risk Management": "Experimentation",
+        "Systems Thinking": "Experimentation",
+    }
+
+    # Precompute per-trait hit counts and evidence notes
+    trait_hits: Dict[str, int] = {}
+    trait_evidence: Dict[str, List[Dict[str, str]]] = {}
     for name, kws in keywords.items():
-        hits = sum(text_blob.count(k) for k in kws)
-        score = min(99, 55 + hits * 4 + (decisions_count if name == "Planning" else 0) * 2 + (versions_total if name == "Experimentation" else 0) * 2)
-        # gather 2 evidence notes with any hit
-        evidence = []
+        total_hits = 0
+        ev: List[Dict[str, str]] = []
         for n in notes:
             t = (n.get("text", "") + " " + n.get("title", "")).lower()
-            if any(k in t for k in kws):
-                evidence.append({"id": n["id"], "title": n["title"]})
-                if len(evidence) >= 2:
-                    break
-        traits.append({"trait": name, "score": score, "evidence": evidence})
-    return {"traits": traits, "total_signals": edges_count + decisions_count + versions_total}
+            local = sum(t.count(k) for k in kws)
+            if local > 0:
+                total_hits += local
+                if len(ev) < 3:
+                    ev.append({"id": n["id"], "title": n["title"]})
+        trait_hits[name] = total_hits
+        trait_evidence[name] = ev
+
+    total_signals = edges_count + decisions_count + versions_total + sum(trait_hits.values())
+
+    traits = []
+    for name in keywords:
+        hits = trait_hits[name]
+        ev_notes = len(trait_evidence[name])
+        # Score is bounded to prevent false precision. Requires evidence to move.
+        planning_boost = decisions_count if name == "Planning" else 0
+        exp_boost = versions_total if name == "Experimentation" else 0
+        base = 40 + hits * 3 + planning_boost * 2 + exp_boost * 2
+        score = max(20, min(95, base))
+        # Confidence is bounded by the raw amount of evidence — never claim 90%
+        # certainty on 2 supporting notes.
+        confidence = max(0.15, min(0.9, (hits + ev_notes * 2) / 30))
+        # Counter-signal: if the inverse trait has stronger evidence, expose it
+        inverse = counter_pairs.get(name)
+        counter = None
+        if inverse and trait_hits.get(inverse, 0) > hits and hits >= 1:
+            counter = {
+                "trait": inverse,
+                "hits": trait_hits[inverse],
+                "note": "Inverse pattern shows stronger evidence than this trait.",
+            }
+        traits.append({
+            "trait": name,
+            "score": score,
+            "confidence": round(confidence, 2),
+            "evidence": trait_evidence[name],
+            "evidence_count": hits,
+            "counter_signal": counter,
+        })
+    return {
+        "traits": traits,
+        "total_signals": total_signals,
+        "notes_analyzed": len(notes),
+        "disclaimer": "Derived from your captured history. Behavioral model — not psychological certainty.",
+    }
 
 # ---------------- AI Shadow ----------------
 @api.get("/shadow")
@@ -2592,22 +2734,71 @@ async def shadow(user=Depends(get_current_user)):
     return {
         "insights": insights,
         "top_patterns": [{"label": c["label"], "weight": c["weight"]} for c in concepts_all],
+        "kind": "DESCRIPTIVE MODEL",
+        "description": "How you tend to think — descriptive behavioral model from your captured history.",
     }
 
 # ---------------- Cognitive Twin ----------------
 @api.post("/twin/predict")
 async def twin_predict(inp: TwinQuery, user=Depends(get_current_user)):
+    """Predictive behavioral model — reasons strictly from the user's captured history.
+    Distinct from AI Shadow (descriptive: HOW you think) — this answers WHAT you'd
+    probably do next. Always returns evidence, confidence, and counter-signal so the
+    prediction is auditable and never appears as certainty.
+    """
     notes = await db.notes.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(30).to_list(30)
     decisions = await db.decisions.find({"user_id": user["id"]}, {"_id": 0}).limit(10).to_list(10)
+    ratified = await db.debates.count_documents({"user_id": user["id"], "ratified": True})
+    contradictions = await db.contradictions.count_documents({"user_id": user["id"]})
+
+    if not notes:
+        return {
+            "prediction": "Not enough history yet — capture more notes and decisions to grow your twin.",
+            "confidence": 0.0,
+            "evidence": [],
+            "evidence_count": 0,
+            "counter_signal": None,
+            "reasoning": "The Cognitive Twin requires captured history to model your behavior.",
+            "kind": "MODEL PREDICTION",
+        }
+
     ctx = "Recent notes:\n" + "\n".join(f"- {n['title']}: {n['text'][:120]}" for n in notes[:15])
     ctx += "\n\nDecisions:\n" + "\n".join(f"- #{d['number']} {d['title']}" for d in decisions)
     system = (
-        "You are a Cognitive Twin. Reason strictly from the user's provided history to answer what THEY would probably do next. "
-        "Be concise (3-5 sentences). Speak in second person. Reference specific past notes or decisions when relevant."
+        "You are a Cognitive Twin. Reason STRICTLY from the user's provided history to predict what THEY would probably do next. "
+        "Return ONLY strict JSON (no backticks, no prose) with keys: "
+        "prediction (one crisp sentence, second person, starts with 'You would probably'), "
+        "confidence (float 0..1 — be honest; do not exceed 0.85 without strong evidence), "
+        "counter_signal (one short sentence identifying evidence AGAINST the prediction, or null), "
+        "reasoning (one short sentence naming which past notes/decisions drove the prediction). "
+        "Never invent history that isn't in the provided context."
     )
     prompt = f"Question: {inp.question}\n\nHistory:\n{ctx}"
     out = await gemini_chat(system, prompt, session_id=f"twin-{user['id']}")
-    return {"answer": out or "Not enough history yet — capture more notes and decisions to grow your twin."}
+    parsed = _parse_json_lenient(out) or {}
+    prediction = str(parsed.get("prediction") or out or "").strip()[:400]
+    if not prediction:
+        prediction = "Not enough history yet — capture more notes and decisions to grow your twin."
+    try:
+        conf = max(0.0, min(0.9, float(parsed.get("confidence") or 0.5)))
+    except Exception:
+        conf = 0.5
+    # Evidence surface: most recent notes and decisions actually shown to the model
+    evidence = [{"kind": "note", "id": n["id"], "title": n["title"]} for n in notes[:6]] + \
+               [{"kind": "decision", "id": d["id"], "number": d.get("number"), "title": d["title"]} for d in decisions[:4]]
+    counter = str(parsed.get("counter_signal") or "").strip()[:280] or None
+    reasoning = str(parsed.get("reasoning") or "").strip()[:280] or "Reasoned from the notes and decisions listed as evidence."
+    return {
+        "prediction": prediction,
+        "confidence": round(conf, 2),
+        "evidence": evidence,
+        "evidence_count": len(notes) + len(decisions),
+        "ratified_precedents": ratified,
+        "known_contradictions": contradictions,
+        "counter_signal": counter,
+        "reasoning": reasoning,
+        "kind": "MODEL PREDICTION",
+    }
 
 # ---------------- Thinking Replay ----------------
 @api.get("/replay/{note_id}")
@@ -2649,11 +2840,11 @@ async def seed_demo(user=Depends(get_current_user)):
             "concepts": concepts,
             "version": 1,
             "parent_id": None,
-            "revenue": random.choice([0, 0, 4500, 18000]),
-            "produced_projects": random.randint(0, 4),
-            "produced_tasks": random.randint(0, 14),
-            "produced_articles": random.randint(0, 2),
-            "produced_proposals": random.randint(0, 3),
+            "revenue": 0,
+            "produced_projects": 0,
+            "produced_tasks": 0,
+            "produced_articles": 0,
+            "produced_proposals": 0,
             "created_at": now_iso(),
             "updated_at": now_iso(),
         }

@@ -65,3 +65,15 @@ Extended `prior_decision_conflict` from count-based to **semantic contradiction 
 - Independent verification (`python3 verify.py`) returns exit 0 against a live-exported bundle.
 - Ledger stays verified through all new contradiction/resolution events.
 
+
+## Round 6 — Credibility Hardening Pass (Jun 2026)
+Targeted metric-credibility patches. NO parallel subsystems created; existing architecture preserved.
+- **Decision metrics** — removed `random.randint` fabrication in `/api/decisions`. `referenced_notes` now counts real concept-overlap peers, `influenced_agents` = distinct council agents who reviewed the source note, `affected_projects`/`produced_tasks` default to 0 (attributed only when downstream evidence exists).
+- **Cognitive DNA** — returns `confidence`, `evidence_count`, `counter_signal` per trait; bounded 20-95% (no false 99% scores); explicit disclaimer that it's a derived behavioral model, not a psychological assessment.
+- **Cognitive Twin** — restructured to return `{prediction, confidence, evidence[], evidence_count, counter_signal, reasoning, kind: "MODEL PREDICTION"}`. Strict-JSON Gemini prompt with confidence ceiling of 0.85. Genome tab now renders the prediction with confidence pill, reasoning, counter-signal, and the exact evidence items reasoned from.
+- **AI Shadow** — labeled `DESCRIPTIVE MODEL` (distinct from Twin's `MODEL PREDICTION`).
+- **Seed data** — `revenue`/`produced_*` fields default to 0 instead of random. No more fake activity.
+- **Test-data cleanup** — new `POST /api/admin/cleanup-test-notes` surgically purges recognizably synthetic artifacts (coffee notes, TEST_ prefixes, my own earlier test notes). Cascades to related state; append-only ledger events untouched.
+
+Backend tests still green (30/30). No new subsystems, no duplicate scoring engines, no parallel state.
+

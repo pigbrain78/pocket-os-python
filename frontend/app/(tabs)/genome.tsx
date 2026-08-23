@@ -6,9 +6,10 @@ import { useAuth, api } from "@/src/lib/auth";
 import { colors, spacing, radius, fs } from "@/src/theme";
 import { Ionicons } from "@expo/vector-icons";
 
-type Shadow = { insights: string[]; top_patterns: { label: string; weight: number }[] };
-type Trait = { trait: string; score: number; evidence: { id: string; title: string }[] };
-type DNA = { traits: Trait[]; total_signals: number };
+type Shadow = { insights: string[]; top_patterns: { label: string; weight: number }[]; kind?: string; description?: string };
+type Trait = { trait: string; score: number; confidence: number; evidence: { id: string; title: string }[]; evidence_count: number; counter_signal: { trait: string; hits: number; note: string } | null };
+type DNA = { traits: Trait[]; total_signals: number; notes_analyzed: number; disclaimer: string };
+type TwinResp = { prediction: string; confidence: number; evidence: { kind: string; id: string; title: string; number?: number }[]; evidence_count: number; ratified_precedents?: number; known_contradictions?: number; counter_signal: string | null; reasoning: string; kind: string };
 
 export default function GenomeScreen() {
   const { token } = useAuth();
@@ -16,7 +17,7 @@ export default function GenomeScreen() {
   const [dna, setDna] = useState<DNA | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [question, setQuestion] = useState("What would I probably build next?");
-  const [answer, setAnswer] = useState("");
+  const [answer, setAnswer] = useState<TwinResp | null>(null);
   const [busy, setBusy] = useState(false);
 
   const loadShadow = useCallback(async () => {
@@ -29,11 +30,11 @@ export default function GenomeScreen() {
   useFocusEffect(useCallback(() => { loadShadow(); }, [loadShadow]));
 
   const askTwin = async () => {
-    setBusy(true); setAnswer("");
+    setBusy(true); setAnswer(null);
     try {
-      const r = await api<{ answer: string }>("/api/twin/predict", { method: "POST", token, body: JSON.stringify({ question }) });
-      setAnswer(r.answer);
-    } catch (e: any) { setAnswer("Twin unavailable: " + e.message); } finally { setBusy(false); }
+      const r = await api<TwinResp>("/api/twin/predict", { method: "POST", token, body: JSON.stringify({ question }) });
+      setAnswer(r);
+    } catch (e: any) { setAnswer({ prediction: "Twin unavailable: " + e.message, confidence: 0, evidence: [], evidence_count: 0, counter_signal: null, reasoning: "", kind: "ERROR" }); } finally { setBusy(false); }
   };
 
   return (
@@ -45,8 +46,12 @@ export default function GenomeScreen() {
 
           {dna ? (
             <View style={styles.section}>
-              <Text style={styles.sh}>Cognitive DNA</Text>
-              <Text style={styles.desc}>Your thinking style, scored from {dna.total_signals} signals.</Text>
+              <View style={styles.rowBetween}>
+                <Text style={styles.sh}>Cognitive DNA</Text>
+                <View style={styles.kindPill}><Text style={styles.kindPillT}>DERIVED FROM HISTORY</Text></View>
+              </View>
+              <Text style={styles.desc}>{dna.disclaimer}</Text>
+              <Text style={styles.descMuted}>{dna.notes_analyzed} notes analyzed · {dna.total_signals} signals</Text>
               <View style={{ marginTop: spacing.md, gap: spacing.md }}>
                 {dna.traits.map((t) => (
                   <Pressable key={t.trait} onPress={() => setExpanded(expanded === t.trait ? null : t.trait)} testID={`trait-${t.trait}`}>
@@ -57,12 +62,25 @@ export default function GenomeScreen() {
                     <View style={styles.traitBar}>
                       <View style={[styles.traitFill, { width: `${t.score}%` }]} />
                     </View>
-                    {expanded === t.trait && t.evidence.length ? (
+                    <View style={styles.traitMetaRow}>
+                      <Text style={styles.traitMeta}>confidence {Math.round(t.confidence * 100)}%</Text>
+                      <Text style={styles.traitMeta}>evidence {t.evidence_count}</Text>
+                      {t.counter_signal ? (
+                        <Text style={[styles.traitMeta, { color: "#B41B10" }]}>counter · {t.counter_signal.trait}</Text>
+                      ) : null}
+                    </View>
+                    {expanded === t.trait ? (
                       <View style={styles.evidence}>
-                        <Text style={styles.evidenceLab}>Evidence</Text>
-                        {t.evidence.map(e => (
+                        <Text style={styles.evidenceLab}>Supporting notes</Text>
+                        {t.evidence.length ? t.evidence.map(e => (
                           <Text key={e.id} style={styles.evidenceT}>· {e.title}</Text>
-                        ))}
+                        )) : <Text style={styles.evidenceT}>Insufficient evidence yet.</Text>}
+                        {t.counter_signal ? (
+                          <>
+                            <Text style={[styles.evidenceLab, { marginTop: 8, color: "#B41B10" }]}>Counter-signal</Text>
+                            <Text style={styles.evidenceT}>{t.counter_signal.note} ({t.counter_signal.trait}: {t.counter_signal.hits} hits)</Text>
+                          </>
+                        ) : null}
                       </View>
                     ) : null}
                   </Pressable>
@@ -72,8 +90,11 @@ export default function GenomeScreen() {
           ) : null}
 
           <View style={styles.section}>
-            <Text style={styles.sh}>AI Shadow</Text>
-            <Text style={styles.desc}>How you think — not what you know.</Text>
+            <View style={styles.rowBetween}>
+              <Text style={styles.sh}>AI Shadow</Text>
+              <View style={styles.kindPill}><Text style={styles.kindPillT}>DESCRIPTIVE MODEL</Text></View>
+            </View>
+            <Text style={styles.desc}>How you tend to think — descriptive, not predictive.</Text>
             {!shadow ? <ActivityIndicator style={{ marginTop: 16 }} /> : (
               <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
                 {shadow.insights.map((ins, i) => (
@@ -97,8 +118,11 @@ export default function GenomeScreen() {
           </View>
 
           <View style={styles.twin}>
-            <Text style={styles.twinH}>Cognitive Twin</Text>
-            <Text style={styles.desc}>Ask what YOU would probably do next — reasoned from your history.</Text>
+            <View style={styles.rowBetween}>
+              <Text style={styles.twinH}>Cognitive Twin</Text>
+              <View style={styles.kindPillDark}><Text style={styles.kindPillDarkT}>MODEL PREDICTION</Text></View>
+            </View>
+            <Text style={styles.descLight}>Ask what YOU would probably do next — reasoned from your history.</Text>
             <TextInput
               value={question}
               onChangeText={setQuestion}
@@ -109,13 +133,34 @@ export default function GenomeScreen() {
               testID="twin-input"
             />
             <Pressable style={styles.askBtn} onPress={askTwin} disabled={busy} testID="twin-ask">
-              {busy ? <ActivityIndicator color="#fff" /> : (
-                <><Ionicons name="planet" size={18} color="#fff" /><Text style={styles.askT}>Ask Twin</Text></>
+              {busy ? <ActivityIndicator color={colors.onSurface} /> : (
+                <><Ionicons name="planet" size={18} color={colors.onSurface} /><Text style={styles.askT}>Ask Twin</Text></>
               )}
             </Pressable>
             {answer ? (
               <View style={styles.ans} testID="twin-answer">
-                <Text style={styles.ansT}>{answer}</Text>
+                <Text style={styles.ansHeader}>PREDICTION · confidence {Math.round((answer.confidence || 0) * 100)}%</Text>
+                <Text style={styles.ansT}>{answer.prediction}</Text>
+                {answer.reasoning ? (
+                  <>
+                    <Text style={styles.ansHeader2}>Reasoning</Text>
+                    <Text style={styles.ansT2}>{answer.reasoning}</Text>
+                  </>
+                ) : null}
+                {answer.counter_signal ? (
+                  <>
+                    <Text style={[styles.ansHeader2, { color: "#FFB1B1" }]}>Counter-signal</Text>
+                    <Text style={styles.ansT2}>{answer.counter_signal}</Text>
+                  </>
+                ) : null}
+                {answer.evidence?.length ? (
+                  <>
+                    <Text style={styles.ansHeader2}>Evidence · {answer.evidence_count} items reasoned from</Text>
+                    {answer.evidence.slice(0, 6).map((e, i) => (
+                      <Text key={i} style={styles.ansT2}>· {e.kind === "decision" ? `Decision #${e.number}` : "Note"}: {e.title}</Text>
+                    ))}
+                  </>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -153,4 +198,16 @@ const styles = StyleSheet.create({
   evidence: { marginTop: 8, paddingLeft: 8, borderLeftWidth: 2, borderLeftColor: colors.border },
   evidenceLab: { color: colors.muted, fontSize: fs.sm, textTransform: "uppercase", letterSpacing: 0.5 },
   evidenceT: { color: colors.onSurfaceSecondary, fontSize: fs.sm, marginTop: 2 },
+  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  descMuted: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
+  descLight: { color: "#B8B8BD", fontSize: fs.base, marginTop: 4 },
+  kindPill: { backgroundColor: "#E8F0FF", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  kindPillT: { color: "#1A4FA3", fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  kindPillDark: { backgroundColor: "#333", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  kindPillDarkT: { color: "#7BE38B", fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  traitMetaRow: { flexDirection: "row", gap: 12, marginTop: 4, flexWrap: "wrap" },
+  traitMeta: { color: colors.muted, fontSize: 10, fontWeight: "700", letterSpacing: 0.3 },
+  ansHeader: { color: "#7BE38B", fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 6 },
+  ansHeader2: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.0, fontWeight: "700", marginTop: 10, marginBottom: 4 },
+  ansT2: { color: "#DDD", fontSize: fs.sm, lineHeight: 19 },
 });

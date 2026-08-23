@@ -1,0 +1,35 @@
+{
+  "summary": "Pocket OS credibility/hardening pass — full verification of all 8 items from the review request. Backend: 8/8 pytest cases pass (POST /api/decisions returns real signals not randints; GET /api/cognitive-dna schema + bounds verified; POST /api/twin/predict returns MODEL PREDICTION shape with confidence bounded 0..0.9 and legacy {answer} shape removed; GET /api/shadow returns DESCRIPTIVE MODEL + description; cleanup endpoint is idempotent and writes a test_data_cleaned ledger event; ledger/verify returns verified=true with breaks=[] after cleanup). Frontend: Genome screen renders 'DERIVED FROM HISTORY' pill + disclaimer + per-trait confidence%/evidence# meta rows for all 6 traits; expanding a trait reveals 'SUPPORTING NOTES' (and counter-signal where present, e.g. Experimentation shows counter · Architectural); AI Shadow card shows 'DESCRIPTIVE MODEL' pill; Cognitive Twin card shows 'MODEL PREDICTION' pill; Ask Twin populates twin-answer with 'PREDICTION · confidence 78%' header, prediction text, Reasoning section, Counter-signal section, and Evidence list with 27 items reasoned from. Regression: timeline (ledger) and note detail screens render normally with new decisions appearing in the ledger.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Genome / AI Shadow", "issues": ["'Top patterns' still shows synthetic concepts leaking from earlier test data: 'Daily caffeine habit', 'Morning coffee routine', 'Morning beverage preference', 'Coffee drinking habits'. The cleanup endpoint deletes matching notes but not the leftover concept nodes in graph_nodes (kind='concept'). Non-blocking — flagging for main agent since the credibility pass explicitly aims to remove obvious test/demo artifacts."]}
+    ],
+    "react_native_issues": [
+      {"component": "styles.*", "issue": "Console warnings: 'shadow* style props are deprecated. Use boxShadow' and 'props.pointerEvents is deprecated. Use style.pointerEvents'. Cosmetic RN Web deprecation notices, no functional impact."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_credibility_patch.py",
+    "/app/test_reports/pytest/credibility_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Extend cleanup-test-notes to also purge leftover graph_nodes with kind='concept' whose label matches obvious test patterns ('coffee', 'caffeine', 'morning beverage'), so AI Shadow Top Patterns no longer surfaces synthetic residue.",
+    "OPTIONAL: Migrate RN shadow* / pointerEvents style props to boxShadow / style.pointerEvents to silence deprecation warnings (cosmetic)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 3048 lines — the credibility patch added ~120 lines to create_decision / cognitive_dna / twin_predict / cleanup_test_notes. Recommend eventual extraction to routes/decisions.py + services/dna.py + services/twin.py so the credibility guarantees (bounded scores, evidence surfaces) live in reviewable units.",
+    "twin_predict clamps confidence at 0.9 upper bound but the LLM system prompt asks for 0..1. That's a defensive belt-and-suspenders which is fine, but a returned 0.9 could be an LLM ceiling artifact vs a genuine cap-hit — consider logging when clamp triggers so calibration can be measured over time."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_credibility_patch.py (new — 8 tests covering all patched surfaces)"
+  ],
+  "success_rate": {"backend": "100% (8/8 credibility tests pass in 23.29s)", "frontend": "100% (all 8 review items verified on /(tabs)/genome; timeline + note detail regressions pass)"},
+  "seed_data_creation": "Test-owned notes prefixed CRED_ (Vector Cache, Council Guard, Standalone) and a TEST_ ephemeral cleanup seed. The TEST_ seed is auto-purged by the cleanup idempotency test. The CRED_ notes remain — main agent can invoke /api/admin/cleanup-test-notes to remove them (they don't match current cleanup patterns; a future pattern 'CRED_' could be added if desired).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend credibility guarantees to preserve on future patches: (1) referenced_notes must equal count of user notes sharing at least one concept with the source note (server.py:1803-1807); (2) influenced_agents must equal distinct council/consensus agents for the source note; (3) affected_projects and produced_tasks stay 0 until real downstream evidence attribution is implemented; (4) DNA score bounded [20,95], confidence bounded [0.15,0.9]; (5) twin_predict must return the structured object shape (no {answer} regression); (6) cleanup endpoint must remain idempotent (subsequent call returns deleted=0). Frontend playwright login: same-origin fetch to /api/auth/login then localStorage.setItem('pocketos_token', j.token) + 'pocketos_user' JSON — reload the page for AuthProvider to pick up the token. Genome tab route: /(tabs)/genome.",
+  "rca_of_issue": "N/A — no bugs found. The one soft observation (Shadow Top Patterns showing 'Coffee drinking habits' etc) is not a regression from this patch; it's residue in graph_nodes that predates the cleanup endpoint. The cleanup endpoint's scope is intentionally limited to notes + their direct dependents (versions, edges, council, consensus, debates, contradictions, operations, decisions) — it does not delete concept nodes because concept nodes are also referenced by legitimate real notes. Extending the pattern-match to concept labels is safe as a follow-up."
+}
