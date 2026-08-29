@@ -10,8 +10,8 @@ import AppleButton from "@/src/components/AppleButton";
 export default function Login() {
   const router = useRouter();
   const { login } = useAuth();
-  const [email, setEmail] = useState("demo@pocketos.app");
-  const [password, setPassword] = useState("pocketos123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 

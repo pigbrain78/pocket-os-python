@@ -874,6 +874,31 @@ async def login(inp: LoginIn):
 async def me(user=Depends(get_current_user)):
     return user
 
+@api.delete("/auth/account")
+async def delete_account(user=Depends(get_current_user)):
+    """Permanently delete the authenticated user's account and all associated
+    workspace data. Apple App Store requires an in-app deletion path for any
+    account-based app. This action is IRREVERSIBLE.
+
+    The Immutable Event Ledger events for this user are also removed, since
+    they are user-scoped evidence. Legal audit requirements (if any) should be
+    exported via /api/ledger/export BEFORE calling this endpoint.
+    """
+    uid_ = user["id"]
+    # Cascade delete every user-scoped collection.
+    for coll in (
+        "notes", "note_versions", "graph_nodes", "graph_edges",
+        "council_responses", "consensus_records", "debates", "contradictions",
+        "operations", "decisions", "executions", "agents", "leases",
+        "chat_sessions", "chat_messages", "events",
+    ):
+        try:
+            await db[coll].delete_many({"user_id": uid_})
+        except Exception:
+            logging.exception(f"delete_account: failed to purge collection {coll}")
+    await db.users.delete_one({"id": uid_})
+    return {"deleted": True, "user_id": uid_}
+
 # ---------------- Apple Sign-In ----------------
 async def get_apple_jwks() -> List[Dict[str, Any]]:
     now = datetime.now(timezone.utc)

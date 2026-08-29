@@ -1,0 +1,29 @@
+{
+  "summary": "Deployment-agent bug-report verification. All 3 flagged fixes VERIFIED end-to-end + 1 regression sanity. (1) BLOCKER httpx: requirements.txt now contains httpx==0.28.1, `python -c 'import server'` succeeds, supervisor shows backend RUNNING, /api/auth/me correctly rejects unauth (403 no-header / 401 bad-token) proving backend is serving on 8001. (2) WARN prefilled password: login.tsx has useState('') for both email/password, no 'demo@pocketos.app' or 'pocketos123' in source or rendered DOM, login screen renders with EMPTY inputs (verified via Playwright at 390x844). (3) WARN account deletion: end-to-end flow works — POST /api/auth/register → POST /api/auth/login (200) → DELETE /api/auth/account (200 {deleted:true, user_id:...}) → POST /api/auth/login with same creds returns 401, and GET /api/notes with the now-orphaned token returns 401. (4) FIX #3 UI: console.tsx exposes 'open-settings' testID (settings-outline icon, logout-btn removed), /settings renders with SIGNED IN AS card showing demo@pocketos.app, settings-logout button, danger card with delete-confirm-input requiring 'DELETE' text, and delete-account-btn (disabled aria-disabled=true until input matches). REGRESSION: pytest test_contradiction.py — all 4 tests pass; /api/ledger/verify for demo user returns verified=true breaks=[]. Deprecated packages detected: none introduced by this fix (pre-existing RN Web shadow*/pointerEvents deprecation warnings from iteration_3 still present, cosmetic only).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "styles.*", "issue": "Pre-existing console warnings: 'shadow* style props are deprecated. Use boxShadow' and 'props.pointerEvents is deprecated. Use style.pointerEvents'. Unchanged from iteration_3; not introduced by these fixes."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_deployment_fixes.py",
+    "/app/test_reports/pytest/deployment_fixes.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Delete confirmation input uses `confirm.trim().toUpperCase() !== 'DELETE'` — this means the user typing lowercase 'delete' also enables the destructive action. The review spec said 'becomes enabled only when the input matches DELETE' (case-sensitive). Consider dropping .toUpperCase() for a stricter Apple-review-friendly confirmation, though current UX is arguably more forgiving. Non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_deployment_fixes.py (new — 10 tests covering all 3 fixes + regression)"
+  ],
+  "success_rate": {"backend": "100% (10/10 deployment-fix tests + 4/4 contradiction regression = 14/14)", "frontend": "100% (login empty, open-settings testID present, settings screen renders with all required elements + destructive-input gating)"},
+  "seed_data_creation": "Test-created user delete-test-<uuid>@pocketos.app is auto-deleted by test_3_delete_account (that is the test). No residue.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 3 deployment-agent-flagged fixes are verified. Regression pytest test_contradiction.py + ledger/verify remain green. Demo user demo@pocketos.app / pocketos123 preserved (deletion tested on throwaway account only). If future testing needs a settings/delete flow reference, see /app/backend/tests/test_deployment_fixes.py::TestAccountDeletion.",
+  "rca_of_issue": "N/A — this was a verification run for already-applied fixes, not a bug hunt. Confirmed root fixes: (1) httpx==0.28.1 line 44 of requirements.txt, (2) login.tsx L13-14 useState(''), (3) DELETE /api/auth/account handler at server.py:877-900 cascading delete across 17 user-scoped collections + users doc, and settings.tsx UI wired to it."
+}

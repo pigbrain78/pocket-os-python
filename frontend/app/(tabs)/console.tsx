@@ -82,8 +82,8 @@ export default function ConsoleScreen() {
             <Text style={styles.osTag}>POCKET OS · COMMAND CENTER</Text>
             <Text style={styles.name}>{data.greeting_name || user?.name || "you"}.</Text>
           </View>
-          <Pressable onPress={logout} hitSlop={12} testID="logout-btn">
-            <Ionicons name="log-out-outline" size={22} color={colors.muted} />
+          <Pressable onPress={() => router.push("/settings")} hitSlop={12} testID="open-settings">
+            <Ionicons name="settings-outline" size={22} color={colors.muted} />
           </Pressable>
         </View>
 
