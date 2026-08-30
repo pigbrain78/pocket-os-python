@@ -93,3 +93,12 @@ Owner-lockout recovery path for locked-out account holders in production.
 2. `curl -X POST https://<prod>/api/auth/admin/reset-password -H "Content-Type: application/json" -d '{"email":"you@x.com","new_password":"<new>","admin_token":"<value from env>"}'`
 3. Sign in to the app with the new password.
 4. Remove `ADMIN_RESET_TOKEN` from env (or set to empty) + redeploy to disable the endpoint again.
+
+## Session +N — Forgot Password (Emergent Resend email flow)
+Real, no-lockout password recovery so admin reset is no longer needed.
+- **`POST /api/auth/forgot-password`** — accepts `{email}`. **Enumeration-safe**: known and unknown emails return byte-identical `{ok:true, detail:"If an account exists for that email, a reset code has been sent."}` at 200. Rate-limited to 5 requests/hour/email. Creates a `password_resets` record (id, email, user_id, hashed code, created_at, expires_at, attempts, used) only for real users.
+- **`POST /api/auth/reset-password`** — accepts `{email, code, new_password}`. 6-digit numeric codes, SHA-256 hashed at rest (server-side pepper via JWT_SECRET), 15-minute TTL, single-use, ≤5 wrong attempts before auto-invalidation. Returns `{ok, token, user}` and writes a `password_reset_completed` event to the Immutable Event Ledger.
+- **Email delivery**: Emergent-managed Resend proxy (`https://integrations.emergentagent.com`, `X-Email-Key` header). Sender display name `EMAIL_FROM_NAME=Pocket OS`. Template is server-side (callers only supply the email ID, per G4); passes the full playbook guardrail gate (`_assert_safe_email`) — no `<form>/<input>`, only https absolute URLs, no shorteners, no IP literals, no credential-ask phrases.
+- **Preview graceful degradation**: `EMERGENT_EMAIL_KEY` is intentionally empty in preview → `send_email` no-ops and logs a warning instead of raising. Real email starts flowing after the next deploy (platform auto-provisions the key).
+- **Frontend**: "Forgot password?" link added to `/auth/login` (testID `forgot-password-link`). New screens `/auth/forgot-password` (request code, enumeration-safe confirmation) and `/auth/reset-password` (email + 6-digit code + new password + confirm; on success auto-logs in via `useAuth().login` and routes to `/(tabs)/console`).
+- **Tests**: `/app/backend/tests/test_forgot_password.py` (24 tests, serial `-n 0`).

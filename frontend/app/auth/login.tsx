@@ -58,6 +58,14 @@ export default function Login() {
             <Pressable testID="login-submit" style={styles.btn} onPress={submit} disabled={busy}>
               {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnT}>Sign in</Text>}
             </Pressable>
+            <Pressable
+              onPress={() => router.push({ pathname: "/auth/forgot-password", params: { email: email.trim() } })}
+              testID="forgot-password-link"
+              hitSlop={8}
+              style={styles.forgotWrap}
+            >
+              <Text style={styles.forgotT}>Forgot password?</Text>
+            </Pressable>
             <View style={styles.divider}><View style={styles.dLine} /><Text style={styles.dT}>or</Text><View style={styles.dLine} /></View>
             <AppleButton onError={(m) => setErr(m)} />
             <Pressable onPress={() => router.replace("/auth/register")} testID="switch-to-register">
@@ -81,6 +89,8 @@ const styles = StyleSheet.create({
   btnT: { color: "#fff", fontSize: fs.lg, fontWeight: "700" },
   switch: { color: colors.muted, textAlign: "center", marginTop: spacing.lg, fontSize: fs.base },
   err: { color: colors.error, marginTop: spacing.sm },
+  forgotWrap: { alignItems: "center", paddingVertical: spacing.md },
+  forgotT: { color: colors.onSurface, fontSize: fs.base, fontWeight: "600", textDecorationLine: "underline" },
   divider: { flexDirection: "row", alignItems: "center", marginVertical: spacing.md, gap: spacing.md },
   dLine: { flex: 1, height: 1, backgroundColor: colors.border },
   dT: { color: colors.muted, fontSize: fs.sm },

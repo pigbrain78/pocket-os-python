@@ -989,6 +989,270 @@ async def delete_account(user=Depends(get_current_user)):
     await db.users.delete_one({"id": uid_})
     return {"deleted": True, "user_id": uid_}
 
+# ---------------- Forgot Password (Emergent Resend) ----------------
+# Code-based password reset: user requests reset -> email with 6-digit code
+# (single-use, hashed at rest, 15-min expiry) -> user submits email+code+new
+# password -> password updated, code invalidated, ledger event appended.
+import re as _re
+import ipaddress as _ipaddress
+import secrets as _secrets
+from html import escape as _html_escape
+from html.parser import HTMLParser as _HTMLParser
+from urllib.parse import urlparse as _urlparse
+
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"  # constant per playbook — do NOT read from env
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "").strip()
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Pocket OS").strip() or "Pocket OS"
+EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
+
+# -- Guardrail gate (copy from playbook, keeps G2 + G3 enforceable in code) --
+_SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
+_CRED_ASK = (
+    "reply with your password", "reply with the code", "send your password", "cvv",
+    "send us your password", "enter your password below", "confirm your card number",
+    "your full card number", "seed phrase", "recovery phrase", "verify your card",
+    "social security number", "confirm your bank details",
+)
+_HOSTISH = _re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", _re.I)
+
+def _host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        _ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+def _same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+class _EmailScan(_HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags, self.urls, self.anchors = set(), [], []
+        self._href, self._text = None, []
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href, self._text = None, []
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    """Structural G2 + G3 guardrail. NEVER weaken, wrap in try/except, or delete."""
+    scan = _EmailScan()
+    scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks the recipient for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Email links/assets must be absolute https: {url!r} (G3)")
+        host = _urlparse(low).hostname or ""
+        if not _host_ok(host) or _urlparse(low).username is not None:
+            raise ValueError(f"Shortened, numeric-host or credential-bearing URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = _urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH.finditer(text):
+            if not _same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor text {m.group(1)!r} != real link host {real!r} (G3)")
+
+async def send_email(*, to: str, subject: str, html: str, reply_to: Optional[str] = None) -> Optional[str]:
+    """Send a transactional email via Emergent Resend proxy. Gracefully no-ops
+    (logs + returns None) if EMERGENT_EMAIL_KEY is not configured — this lets
+    the reset flow work in preview and light up automatically once the
+    platform provisions the key at deploy time."""
+    _assert_safe_email(subject, html)  # G2 + G3 gate, never skip
+    if not EMAIL_KEY:
+        logging.warning("send_email: EMERGENT_EMAIL_KEY not set — email to %s NOT sent. Subject: %s", to, subject)
+        return None
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    if reply_to or EMAIL_REPLY_TO:
+        payload["contact_email"] = reply_to or EMAIL_REPLY_TO
+    try:
+        async with httpx.AsyncClient(timeout=30) as client_:
+            resp = await client_.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": EMAIL_KEY},
+                json=payload,
+            )
+        resp.raise_for_status()
+        return (resp.json() or {}).get("id")
+    except httpx.HTTPStatusError as e:
+        logging.error("Email send failed: %s %s", e.response.status_code, e.response.text)
+        raise HTTPException(status_code=502, detail="Failed to send email")
+    except Exception:
+        logging.exception("Email send error")
+        raise HTTPException(status_code=500, detail="Failed to send email")
+
+# -- Password reset code storage --
+RESET_CODE_TTL_MINUTES = 15
+RESET_CODE_MAX_ATTEMPTS = 5
+_FORGOT_ATTEMPTS: Dict[str, List[float]] = {}  # email -> recent request timestamps
+
+def _hash_code(code: str) -> str:
+    return hashlib.sha256(f"{JWT_SECRET}:{code}".encode()).hexdigest()
+
+def _rate_limit_forgot(email: str) -> bool:
+    now = _time.time()
+    window_start = now - 3600.0  # 1 hour
+    bucket = _FORGOT_ATTEMPTS.get(email, [])
+    bucket = [t for t in bucket if t >= window_start]
+    if len(bucket) >= 5:
+        _FORGOT_ATTEMPTS[email] = bucket
+        return False
+    bucket.append(now)
+    _FORGOT_ATTEMPTS[email] = bucket
+    return True
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+class ResetPasswordIn(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
+
+def _reset_email_body(code: str, display_name: str) -> tuple[str, str]:
+    """Server-side template. No forms, no card-details, no credential asks.
+    G1: from is our own brand. G2: no <form>/<input>, never asks for password.
+    G3: no external links (footer is a mailto: which is allowed). G4: recipient
+    + subject + body all server-controlled, caller only supplies the ID (email).
+    """
+    subject = f"Your {EMAIL_FROM_NAME} password reset code"
+    safe_name = _html_escape(display_name or "there")
+    safe_code = _html_escape(code)
+    safe_app = _html_escape(EMAIL_FROM_NAME)
+    html = (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"'
+        ' style="background:#0b0f14;padding:32px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">'
+        '<tr><td align="center">'
+        '<table role="presentation" width="100%" style="max-width:520px;background:#141a22;'
+        'border-radius:16px;padding:32px" cellpadding="0" cellspacing="0"><tr><td>'
+        f'<h1 style="color:#fff;font-size:22px;font-weight:700;margin:0 0 8px">Reset your password</h1>'
+        f'<p style="color:#a8b3c1;font-size:15px;line-height:22px;margin:0 0 24px">Hi {safe_name}, '
+        f'here is the one-time code to reset your {safe_app} password.</p>'
+        f'<div style="background:#0b0f14;border-radius:12px;padding:20px;text-align:center;'
+        f'letter-spacing:8px;color:#fff;font-size:32px;font-weight:800;font-family:Menlo,monospace">'
+        f'{safe_code}</div>'
+        f'<p style="color:#a8b3c1;font-size:14px;line-height:20px;margin:24px 0 0">'
+        f'This code expires in {RESET_CODE_TTL_MINUTES} minutes and can be used once. '
+        f'Enter it in the app on the &ldquo;Reset password&rdquo; screen.</p>'
+        f'<p style="color:#6b7684;font-size:12px;line-height:18px;margin:24px 0 0">'
+        f'If you did not request this, you can safely ignore this email &mdash; your password will not change. '
+        f'{safe_app} will never ask you for your password by email.</p>'
+        '</td></tr></table>'
+        f'<p style="color:#6b7684;font-size:11px;margin:16px 0 0">Sent by {safe_app}</p>'
+        '</td></tr></table>'
+    )
+    return subject, html
+
+@api.post("/auth/forgot-password")
+async def forgot_password(inp: ForgotPasswordIn):
+    """Request a password reset. Always returns 200 with a generic message
+    regardless of whether the email exists (prevents user enumeration).
+    Rate-limited per email to 5 requests per hour."""
+    email = inp.email.lower().strip()
+    generic = {"ok": True, "detail": "If an account exists for that email, a reset code has been sent."}
+    if not _rate_limit_forgot(email):
+        # Still return the generic response, but log it.
+        logging.warning("forgot_password: rate limit exceeded for %s", email)
+        return generic
+    user = await db.users.find_one({"email": email})
+    if not user:
+        # Do not disclose non-existence.
+        return generic
+    # Generate a cryptographically secure 6-digit code.
+    code = f"{_secrets.randbelow(1_000_000):06d}"
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=RESET_CODE_TTL_MINUTES)
+    # Overwrite any previous outstanding code for this user.
+    await db.password_resets.delete_many({"email": email})
+    await db.password_resets.insert_one({
+        "id": uid(),
+        "email": email,
+        "user_id": user["id"],
+        "code_hash": _hash_code(code),
+        "created_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "attempts": 0,
+        "used": False,
+    })
+    subject, html = _reset_email_body(code, user.get("name") or "there")
+    try:
+        email_id = await send_email(to=email, subject=subject, html=html)
+    except HTTPException:
+        # Do not leak email-provider failures; user sees generic response.
+        email_id = None
+    logging.info("forgot_password: reset code issued for %s (email_id=%s, email_key_set=%s)", email, email_id, bool(EMAIL_KEY))
+    return generic
+
+@api.post("/auth/reset-password")
+async def reset_password(inp: ResetPasswordIn):
+    """Verify a reset code and set the new password. Consumes the code on
+    success; increments attempts on failure and invalidates the code after
+    RESET_CODE_MAX_ATTEMPTS failures."""
+    email = inp.email.lower().strip()
+    code = (inp.code or "").strip()
+    if len(inp.new_password) < 8:
+        raise HTTPException(status_code=400, detail="new_password must be at least 8 characters")
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(status_code=400, detail="Invalid code")
+    rec = await db.password_resets.find_one({"email": email, "used": False})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    # Check expiry
+    try:
+        expires_at = datetime.fromisoformat(rec["expires_at"])
+    except Exception:
+        expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    if datetime.now(timezone.utc) > expires_at:
+        await db.password_resets.delete_one({"id": rec["id"]})
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    # Check attempts
+    if rec.get("attempts", 0) >= RESET_CODE_MAX_ATTEMPTS:
+        await db.password_resets.delete_one({"id": rec["id"]})
+        raise HTTPException(status_code=400, detail="Too many attempts; request a new code")
+    if not _hmac.compare_digest(rec["code_hash"], _hash_code(code)):
+        await db.password_resets.update_one({"id": rec["id"]}, {"$inc": {"attempts": 1}})
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    # Valid — reset the password
+    await db.users.update_one(
+        {"id": rec["user_id"]},
+        {"$set": {"password": hash_password(inp.new_password), "password_reset_at": now_iso()}},
+    )
+    await db.password_resets.delete_many({"email": email})  # invalidate all outstanding codes
+    try:
+        await log_event(
+            user_id=rec["user_id"],
+            kind="password_reset_completed",
+            text=f"Password reset via email code for {email}",
+            meta={"email": email},
+        )
+    except Exception:
+        logging.exception("reset_password: failed to append ledger event")
+    # Issue a fresh session token so the app can sign the user in immediately.
+    user = await db.users.find_one({"id": rec["user_id"]}, {"_id": 0, "password": 0})
+    token = create_token(rec["user_id"])
+    return {"ok": True, "token": token, "user": user}
+
 # ---------------- Apple Sign-In ----------------
 async def get_apple_jwks() -> List[Dict[str, Any]]:
     now = datetime.now(timezone.utc)

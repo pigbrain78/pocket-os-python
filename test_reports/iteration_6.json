@@ -1,0 +1,32 @@
+{
+  "summary": "Full backend + frontend verification of the new Forgot-Password (Emergent Resend) flow. Backend: 24/24 pytest tests pass in /app/backend/tests/test_forgot_password.py covering (a) POST /api/auth/forgot-password enumeration safety (identical 200 body/status for known and unknown emails, DB record created only for known emails, rate-limit blocks 6th call within the hour), (b) POST /api/auth/reset-password rejection paths (short password 400, non-6-digit code 400, wrong code 400, expired code 400+auto-purge, code reuse after success 400, >5 wrong attempts 400+invalidate), (c) success path (200 with {ok,token,user}, reset record removed, bcrypt-hashed password stored, ledger 'password_reset_completed' event appended, old password → 401, new password → 200), (d) _assert_safe_email guardrail rejects <form>/<input>, http://, bit.ly shorteners, IP-literal hosts, credential-ask phrases, while the real _reset_email_body template passes, (e) send_email helper no-ops + logs a warning when EMERGENT_EMAIL_KEY is empty and POSTs to https://integrations.emergentagent.com/api/v1/email/send with X-Email-Key header + from_name when the key is set (mocked), (f) regression /api/auth/admin/reset-password still returns 503 / 401 / 200 correctly. Frontend: /auth/login shows testID='forgot-password-link' between Sign-in and 'or' divider — tap navigates to /auth/forgot-password with the typed email pre-filled. /auth/forgot-password renders the email input, 'Send reset code' button and 'I already have a code' link — submit shows the 'Check your inbox' confirmation with testID='continue-to-reset' which navigates to /auth/reset-password with the email carried in the query param. /auth/reset-password has all 4 inputs, code field only accepts digits and hard-caps at 6 (verified via typing '1234567890' → '123456' and typing 'ab123' → '123'), all client-side validations produce the correct messages ('Enter your email', 'Enter the 6-digit code from your email', 'Password must be at least 8 characters', \"Passwords don't match\"), backend 400 surfaces as 'Invalid or expired code' in testID='reset-error'. Full E2E: seeded a fresh reset code in Mongo, filled the UI, submitted → auto-login via useAuth().login → router.replace('/(tabs)/console') landed at /console with the tab bar rendered. Demo password restored to pocketos123 after the flow. NO bugs found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_forgot_password.py",
+    "/app/test_reports/pytest/forgot_password_results.xml",
+    "/app/test_reports/iteration_6.json"
+  ],
+  "action_items": [
+    "None — feature is production-ready pending EMERGENT_EMAIL_KEY provisioning at deploy. In preview the send_email helper correctly no-ops and logs 'send_email: EMERGENT_EMAIL_KEY not set — email to <addr> NOT sent' as expected.",
+    "Reminder for main agent: pytest.ini pins '-n 2 --dist loadscope' — the new test file MUST be run with '-n 0' (serial) because parallel workers race on the shared demo@pocketos.app user's password_resets record. This is documented in the test file's docstring."
+  ],
+  "critical_code_review_comments": [
+    "server.py is >3400 lines — should be split into modules (auth, notes, council, ledger, decisions, forgot-password) for maintainability. Not blocking the current feature.",
+    "Rate-limit + forgot-password buckets (_FORGOT_ATTEMPTS, _ADMIN_RESET_ATTEMPTS) are in-process dicts. Fine for single-instance preview, but a Redis-backed limiter is safer once the app runs behind >1 replica."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_forgot_password.py (new — 24 tests, all passing serially)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Test seeded a temporary password_resets record with code '424242' for demo@pocketos.app to complete the UI E2E flow. Record consumed by the successful reset; demo password reset by the flow was restored to pocketos123 post-run and verified via /api/auth/login → 200.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: `cd /app/backend && python -m pytest tests/test_forgot_password.py -v --tb=short -n 0` (serial). Parallel xdist workers race on the shared demo user record. The tests are self-cleaning (each restores demo pw + purges password_resets records in a finally block). Test file uses direct in-process imports of server.py for seeding + guardrail tests, and public-URL requests to /api/auth/... for HTTP endpoint validation. Guardrail + send_email + admin-reset regressions are all covered.",
+  "rca_of_issue": "Not applicable — feature validation, no bug found. Verified guardrail (_assert_safe_email is called on every send path including when EMAIL_KEY is empty — the guardrail runs BEFORE the empty-key early-return, so any bad template would still be caught). Enumeration safety verified byte-for-byte: known and unknown email responses have identical JSON bodies + identical 200 status."
+}
