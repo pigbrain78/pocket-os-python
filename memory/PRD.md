@@ -77,3 +77,19 @@ Targeted metric-credibility patches. NO parallel subsystems created; existing ar
 
 Backend tests still green (30/30). No new subsystems, no duplicate scoring engines, no parallel state.
 
+
+
+## Session +N — Emergency Admin Password Reset (recovery)
+Owner-lockout recovery path for locked-out account holders in production.
+- **New endpoint** `POST /api/auth/admin/reset-password` — guarded by `ADMIN_RESET_TOKEN` env var (constant-time `hmac.compare_digest`). If env var unset/empty → 503 (safe default off).
+- Rate-limited to 10 attempts / 60 s (in-memory sliding window).
+- Rejects passwords < 8 chars.
+- Creates the account if the email does not exist (recovery from data loss).
+- Writes an `admin_password_reset` event to the Immutable Event Ledger for every successful reset.
+- Response returns a fresh JWT so the owner can call the API directly if the app UI is unreachable.
+
+### Runbook — locked out of production
+1. Set `ADMIN_RESET_TOKEN=<long random string>` in production env, redeploy.
+2. `curl -X POST https://<prod>/api/auth/admin/reset-password -H "Content-Type: application/json" -d '{"email":"you@x.com","new_password":"<new>","admin_token":"<value from env>"}'`
+3. Sign in to the app with the new password.
+4. Remove `ADMIN_RESET_TOKEN` from env (or set to empty) + redeploy to disable the endpoint again.

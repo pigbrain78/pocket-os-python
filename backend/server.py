@@ -94,6 +94,11 @@ class AppleIn(BaseModel):
     full_name: Optional[str] = None
     email: Optional[EmailStr] = None
 
+class AdminResetIn(BaseModel):
+    email: EmailStr
+    new_password: str
+    admin_token: str
+
 class NoteIn(BaseModel):
     text: str
     title: Optional[str] = None
@@ -869,6 +874,91 @@ async def login(inp: LoginIn):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_token(user["id"])
     return {"token": token, "user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
+
+# ---- Emergency admin password reset ----
+# One-time bypass for locked-out account owners. Guarded by ADMIN_RESET_TOKEN
+# env var, which MUST be set at deploy time and MUST be a long random string.
+# If the env var is unset or empty, the endpoint refuses to run (503) so it
+# cannot be accidentally left open. Every reset is written to the Immutable
+# Event Ledger as evidence.
+import hmac as _hmac
+import time as _time
+
+_ADMIN_RESET_ATTEMPTS: List[float] = []  # in-memory sliding window of recent attempts
+
+def _admin_reset_rate_limit_ok() -> bool:
+    now = _time.time()
+    window_start = now - 60.0
+    # drop old entries
+    _ADMIN_RESET_ATTEMPTS[:] = [t for t in _ADMIN_RESET_ATTEMPTS if t >= window_start]
+    if len(_ADMIN_RESET_ATTEMPTS) >= 10:
+        return False
+    _ADMIN_RESET_ATTEMPTS.append(now)
+    return True
+
+@api.post("/auth/admin/reset-password")
+async def admin_reset_password(inp: AdminResetIn):
+    """Emergency password reset for a locked-out account owner.
+
+    Requires ADMIN_RESET_TOKEN env var to be set. Compares the supplied token
+    in constant time. If the target email does not exist, the account is
+    created so a legitimate owner recovering from data loss can still get in.
+    """
+    admin_token = os.environ.get("ADMIN_RESET_TOKEN", "").strip()
+    if not admin_token:
+        raise HTTPException(status_code=503, detail="Admin reset is disabled on this deployment")
+    if not _admin_reset_rate_limit_ok():
+        raise HTTPException(status_code=429, detail="Too many admin reset attempts, try again later")
+    supplied = (inp.admin_token or "").strip()
+    if not _hmac.compare_digest(supplied, admin_token):
+        # log the failed attempt without leaking why
+        logging.warning("admin_reset_password: token mismatch for email=%s", inp.email)
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    if len(inp.new_password) < 8:
+        raise HTTPException(status_code=400, detail="new_password must be at least 8 characters")
+
+    email = inp.email.lower()
+    existing = await db.users.find_one({"email": email})
+    now = now_iso()
+    if existing:
+        await db.users.update_one(
+            {"id": existing["id"]},
+            {"$set": {"password": hash_password(inp.new_password), "password_reset_at": now}},
+        )
+        user_id = existing["id"]
+        created = False
+        display_name = existing.get("name") or email.split("@")[0]
+    else:
+        user_id = uid()
+        display_name = email.split("@")[0]
+        await db.users.insert_one({
+            "id": user_id,
+            "email": email,
+            "name": display_name,
+            "password": hash_password(inp.new_password),
+            "created_at": now,
+            "password_reset_at": now,
+        })
+        created = True
+
+    # Append to Immutable Event Ledger as evidence of the admin action.
+    try:
+        await log_event(
+            user_id=user_id,
+            kind="admin_password_reset",
+            text=f"Admin password reset for {email}",
+            meta={"email": email, "created_new_account": created},
+        )
+    except Exception:
+        logging.exception("admin_reset_password: failed to append ledger event")
+
+    token = create_token(user_id)
+    return {
+        "ok": True,
+        "created_new_account": created,
+        "user": {"id": user_id, "email": email, "name": display_name},
+        "token": token,
+    }
 
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
