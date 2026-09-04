@@ -1,5 +1,7 @@
-# Plan: Durable Pocket OS checkpoint archive
+# Plan: Login rate-limiting milestone (commit + push)
 
-- [x] Build the recovery manifest (version, state, inventory, restore instructions) — Building the recovery manifest — version, inventory, ledger state, restore instructions — Recovery manifest written — version, inventory, test counts, restore instructions
-- [x] Package source + ledger + tests + manifest into a single checkpoint archive — Packaging source, ledger, tests, and manifest into a single checkpoint archive — Checkpoint archive packaged — all 21 source/test files + ledger + manifest
-- [x] Verify the archive is complete, listable, and reproducible; report recovery path — Verifying the archive is complete and restores to a working tree — Archive verified — restores to 22 files, ledger validates INTACT from the restored copy
+- [x] Add per-IP login attempt tracking with lockout window — Login rate-limiting implemented — per-IP tracking, lockout, 429 with Retry-After
+- [ ] Enforce rate limit on /api/login; return 429 with Retry-After
+- [x] Add rate-limit tests (burst denied, lockout, reset after window) — Rate-limit tests pass — burst locks out with 429+Retry-After, success resets, lockout expires
+- [x] Run all suites green — Running the full auth suite and confirming no regressions before the commit — All unit/API suites green — auth 18, engines 25, replay 11, control-room 20, features 11
+- [~] Commit and push to origin — All suites green (99 tests). Committing the rate-limiting milestone and pushing to origin

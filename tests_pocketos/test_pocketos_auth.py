@@ -32,9 +32,13 @@ client = TestClient(A.app)
 def _clean_sessions():
     with A._SESSION_LOCK:
         A._SESSIONS.clear()
+        A._LOGIN_ATTEMPTS.clear()
+        A._LOGIN_LOCKOUTS.clear()
     yield
     with A._SESSION_LOCK:
         A._SESSIONS.clear()
+        A._LOGIN_ATTEMPTS.clear()
+        A._LOGIN_LOCKOUTS.clear()
 
 
 def _login(username="admin", password="demo"):
@@ -190,3 +194,34 @@ def test_admin_permissions_present():
     perms = r.json()["permissions"]
     for p in ("RATIFY", "EXECUTE", "ADMIN"):
         assert p in perms
+
+
+def test_login_rate_limit_after_burst_of_failures():
+    # _LOGIN_MAX_ATTEMPTS rapid wrong-password attempts from one client IP must
+    # lock that IP out; the next attempt (even correct) is rejected 429 with a
+    # Retry-After header. The gate is the IP, not the credential.
+    for _ in range(A._LOGIN_MAX_ATTEMPTS):
+        r = client.post("/api/login", json={"username": "admin", "password": "wrong"})
+        assert r.status_code == 401
+    r = client.post("/api/login", json={"username": "admin", "password": "demo"})
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers
+    assert int(r.headers["Retry-After"]) >= 1
+
+
+def test_login_success_resets_rate_limit():
+    # A successful login clears the failure count, so later failures start from
+    # a clean slate rather than inheriting a stale count.
+    assert client.post("/api/login", json={"username": "admin", "password": "wrong"}).status_code == 401
+    assert client.post("/api/login", json={"username": "admin", "password": "demo"}).status_code == 200
+    assert client.post("/api/login", json={"username": "admin", "password": "wrong"}).status_code == 401
+    assert client.post("/api/login", json={"username": "admin", "password": "wrong"}).status_code == 401
+
+
+def test_login_lockout_expires():
+    # Simulate a lockout whose window has already elapsed: the IP is allowed.
+    import time as _t
+    with A._SESSION_LOCK:
+        A._LOGIN_LOCKOUTS["testclient"] = _t.time() - 1  # lockout already expired
+    r = client.post("/api/login", json={"username": "admin", "password": "demo"})
+    assert r.status_code == 200

@@ -188,6 +188,46 @@ _SESSIONS: dict[str, dict[str, Any]] = {}
 _SESSION_LOCK = threading.RLock()
 _SESSION_TTL = 3600  # seconds
 
+# Login rate limiting: per-client-IP failed-attempt tracking with a lockout
+# window. Slows brute force without a third-party dependency.
+_LOGIN_MAX_ATTEMPTS = 5        # failed attempts before lockout
+_LOGIN_WINDOW = 300            # attempts counted within this many seconds
+_LOGIN_LOCKOUT = 300           # lockout seconds after exceeding the max
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}  # ip -> [attempt timestamps]
+_LOGIN_LOCKOUTS: dict[str, float] = {}        # ip -> lockout-until timestamp
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_allowed(ip: str) -> Optional[float]:
+    """Return None if allowed, else the lockout-until timestamp (seconds)."""
+    now = time.time()
+    with _SESSION_LOCK:
+        # Lockout active?
+        if _LOGIN_LOCKOUTS.get(ip, 0) > now:
+            return _LOGIN_LOCKOUTS[ip]
+        # Prune attempts outside the sliding window.
+        recent = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if t > now - _LOGIN_WINDOW]
+        if len(recent) >= _LOGIN_MAX_ATTEMPTS:
+            _LOGIN_LOCKOUTS[ip] = now + _LOGIN_LOCKOUT
+            _LOGIN_ATTEMPTS[ip] = []
+            return _LOGIN_LOCKOUTS[ip]
+        _LOGIN_ATTEMPTS[ip] = recent
+        return None
+
+
+def _login_record_failure(ip: str) -> None:
+    with _SESSION_LOCK:
+        _LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
+
+
+def _login_clear(ip: str) -> None:
+    with _SESSION_LOCK:
+        _LOGIN_ATTEMPTS.pop(ip, None)
+        _LOGIN_LOCKOUTS.pop(ip, None)
+
 # Password hashing (stdlib PBKDF2-HMAC-SHA256 — no plaintext stored)
 _PBKDF2_ITERATIONS = 210_000
 
@@ -479,14 +519,25 @@ def api_decisions() -> dict[str, Any]:
 
 
 @app.post("/api/login")
-def api_login(body: LoginBody) -> dict[str, Any]:
+def api_login(body: LoginBody, request: Request) -> dict[str, Any]:
+    ip = _client_ip(request)
+    lockout_until = _login_allowed(ip)
+    if lockout_until is not None:
+        retry_after = max(1, int(lockout_until - time.time()))
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many login attempts; try again in {retry_after}s",
+            headers={"Retry-After": str(retry_after)},
+        )
     username = body.username
     user = USERS.get(username)
     # Verify against the stored PBKDF2 hash. Unknown user still runs a verify
     # against a dummy hash so timing does not reveal which usernames exist.
     stored = user["password_hash"] if user else _DUMMY_HASH
     if user is None or not _verify_password(body.password, stored):
+        _login_record_failure(ip)
         raise HTTPException(status_code=401, detail="invalid credentials")
+    _login_clear(ip)
     return _issue_session(username)
 
 
