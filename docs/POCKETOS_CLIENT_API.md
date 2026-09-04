@@ -221,3 +221,16 @@ current console's composite projections and are owned by the transport (via
 `pocket.console.*`); they are not part of the canonical client contract. When
 the contract changes, a new versioned surface (`/api/v2`) is added rather than
 mutating `/api/v1` in place.
+
+## 10. Machine-readable schema
+
+The contract is published as an OpenAPI 3.1 document for code generation:
+
+- **Live**: `GET /api/v1/openapi.json` — always reflects the running app.
+- **Committed artifact**: `docs/POCKETOS_CLIENT_API.openapi.json` — the
+  canonical `/api/v1` surface only (16 paths), versioned and checked in so the
+  iPhone client can pin a spec even when the live server is unreachable.
+
+A Swift/iOS client can generate its transport (types, routes, request bodies)
+directly from this schema, which is exactly why the contract carries no
+web-only concepts.

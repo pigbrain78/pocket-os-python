@@ -194,3 +194,37 @@ def test_governance_failure_produces_no_mutation():
     # The v1 contract exposes no execute verb — proposals/ratify/reject only.
     paths = [route.path for route in A.app.routes]
     assert not any(p.endswith("/execute") and p.startswith("/api/v1") for p in paths)
+
+
+def test_openapi_export_is_machine_readable():
+    # The iPhone contract is published as OpenAPI for code generation. The
+    # live export must (a) be valid OpenAPI 3.1, (b) carry a versioned title,
+    # and (c) expose the canonical /api/v1 routes.
+    r = client.get("/api/v1/openapi.json")
+    assert r.status_code == 200
+    schema = r.json()
+    assert schema["openapi"].startswith("3.1")
+    assert "paths" in schema
+    v1_paths = [p for p in schema["paths"] if p.startswith("/api/v1")]
+    assert v1_paths, "no /api/v1 paths in the published schema"
+    # The v1 contract must not expose an execute verb (governance invariant).
+    # (The legacy demo does expose an execute route for testing the runtime,
+    # but that is not part of the /api/v1 client contract.)
+    v1_execute = [p for p in schema["paths"] if p.startswith("/api/v1") and p.endswith("/execute")]
+    assert not v1_execute
+
+
+def test_committed_openapi_artifact_is_scoped_to_v1():
+    # The checked-in artifact (docs/POCKETOS_CLIENT_API.openapi.json) must be
+    # valid and scoped to /api/v1 only — no legacy routes leak into the
+    # iPhone-facing machine contract.
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "docs", "POCKETOS_CLIENT_API.openapi.json")
+    assert os.path.exists(path), "committed OpenAPI artifact missing"
+    with open(path) as f:
+        schema = json.load(f)
+    assert schema["info"]["version"] == "1"
+    paths = list(schema["paths"].keys())
+    assert paths, "artifact has no paths"
+    assert all(p.startswith("/api/v1") for p in paths), "non-v1 path leaked into artifact"
+    assert not any(p.endswith("/execute") for p in paths)

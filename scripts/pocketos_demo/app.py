@@ -815,6 +815,18 @@ def _ctx_v1(request: Request, v: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@app.get("/api/v1/openapi.json")
+def v1_openapi(request: Request) -> JSONResponse:
+    """Machine-readable OpenAPI schema for the canonical /api/v1 contract.
+
+    Served so the future iPhone client can generate its transport from one
+    authoritative document. The schema is produced from the live app routes,
+    so it never drifts from the running contract.
+    """
+    schema = app.openapi()
+    return JSONResponse(schema)
+
+
 @app.get("/api/v1/status")
 def v1_status(request: Request) -> dict[str, Any]:
     return _ctx_v1(request, {

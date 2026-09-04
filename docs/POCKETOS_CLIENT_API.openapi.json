@@ -1,0 +1,655 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Pocket OS Client API",
+    "version": "1",
+    "description": "Canonical versioned client contract consumed by the web console and the future iPhone application."
+  },
+  "paths": {
+    "/api/v1/openapi.json": {
+      "get": {
+        "summary": "V1 Openapi",
+        "description": "Machine-readable OpenAPI schema for the canonical /api/v1 contract.\n\nServed so the future iPhone client can generate its transport from one\nauthoritative document. The schema is produced from the live app routes,\nso it never drifts from the running contract.",
+        "operationId": "v1_openapi_api_v1_openapi_json_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "summary": "V1 Status",
+        "operationId": "v1_status_api_v1_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Status Api V1 Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory": {
+      "get": {
+        "summary": "V1 Memory",
+        "operationId": "v1_memory_api_v1_memory_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Memory Api V1 Memory Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory/{sequence}": {
+      "get": {
+        "summary": "V1 Memory Get",
+        "operationId": "v1_memory_get_api_v1_memory__sequence__get",
+        "parameters": [
+          {
+            "name": "sequence",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Sequence"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response V1 Memory Get Api V1 Memory  Sequence  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cognitive-twin": {
+      "get": {
+        "summary": "V1 Cognitive Twin",
+        "operationId": "v1_cognitive_twin_api_v1_cognitive_twin_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Cognitive Twin Api V1 Cognitive Twin Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ai-shadow": {
+      "get": {
+        "summary": "V1 Ai Shadow",
+        "operationId": "v1_ai_shadow_api_v1_ai_shadow_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Ai Shadow Api V1 Ai Shadow Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decisions": {
+      "get": {
+        "summary": "V1 Decisions",
+        "operationId": "v1_decisions_api_v1_decisions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Decisions Api V1 Decisions Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decisions/{decision_id}": {
+      "get": {
+        "summary": "V1 Decisions Get",
+        "operationId": "v1_decisions_get_api_v1_decisions__decision_id__get",
+        "parameters": [
+          {
+            "name": "decision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Decision Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response V1 Decisions Get Api V1 Decisions  Decision Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ledger": {
+      "get": {
+        "summary": "V1 Ledger",
+        "operationId": "v1_ledger_api_v1_ledger_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Ledger Api V1 Ledger Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ledger/events/{sequence}": {
+      "get": {
+        "summary": "V1 Ledger Event",
+        "operationId": "v1_ledger_event_api_v1_ledger_events__sequence__get",
+        "parameters": [
+          {
+            "name": "sequence",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Sequence"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response V1 Ledger Event Api V1 Ledger Events  Sequence  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/replay/status": {
+      "get": {
+        "summary": "V1 Replay Status",
+        "operationId": "v1_replay_status_api_v1_replay_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Replay Status Api V1 Replay Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/replay/inspect": {
+      "get": {
+        "summary": "V1 Replay Inspect",
+        "operationId": "v1_replay_inspect_api_v1_replay_inspect_get",
+        "parameters": [
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "name": "include_decisions",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Decisions"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response V1 Replay Inspect Api V1 Replay Inspect Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/evidence/verification": {
+      "get": {
+        "summary": "V1 Evidence Verification",
+        "operationId": "v1_evidence_verification_api_v1_evidence_verification_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Evidence Verification Api V1 Evidence Verification Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decisions/propose": {
+      "post": {
+        "summary": "V1 Decisions Propose",
+        "operationId": "v1_decisions_propose_api_v1_decisions_propose_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposalBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response V1 Decisions Propose Api V1 Decisions Propose Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decisions/{decision_id}/ratify": {
+      "post": {
+        "summary": "V1 Decisions Ratify",
+        "operationId": "v1_decisions_ratify_api_v1_decisions__decision_id__ratify_post",
+        "parameters": [
+          {
+            "name": "decision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Decision Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatifyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response V1 Decisions Ratify Api V1 Decisions  Decision Id  Ratify Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decisions/{decision_id}/reject": {
+      "post": {
+        "summary": "V1 Decisions Reject",
+        "operationId": "v1_decisions_reject_api_v1_decisions__decision_id__reject_post",
+        "parameters": [
+          {
+            "name": "decision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Decision Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatifyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response V1 Decisions Reject Api V1 Decisions  Decision Id  Reject Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ExecuteBody": {
+        "properties": {
+          "claimed_authority": {
+            "type": "string",
+            "title": "Claimed Authority",
+            "default": "NONE"
+          }
+        },
+        "type": "object",
+        "title": "ExecuteBody"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LoginBody": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginBody"
+      },
+      "ProposalBody": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id",
+            "default": ""
+          },
+          "risk": {
+            "type": "string",
+            "title": "Risk",
+            "default": "MEDIUM"
+          },
+          "reversible": {
+            "type": "boolean",
+            "title": "Reversible",
+            "default": true
+          },
+          "send_to_council": {
+            "type": "boolean",
+            "title": "Send To Council",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "ProposalBody"
+      },
+      "RatifyBody": {
+        "properties": {
+          "claimed_authority": {
+            "type": "string",
+            "title": "Claimed Authority",
+            "default": "NONE"
+          }
+        },
+        "type": "object",
+        "title": "RatifyBody"
+      },
+      "SeedLegacyBody": {
+        "properties": {
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Records",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "SeedLegacyBody"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
