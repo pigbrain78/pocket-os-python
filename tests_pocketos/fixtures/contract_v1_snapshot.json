@@ -1,0 +1,292 @@
+{
+  "contract_version": 1,
+  "paths": {
+    "/api/v1/ai-shadow": {
+      "ai_shadow": {
+        "authority_boundary": {
+          "execution_requires": [
+            "str"
+          ],
+          "shadow_authority": "str",
+          "shadow_can_execute": "bool",
+          "shadow_can_ratify": "bool"
+        },
+        "items": [
+          {
+            "authority": "str",
+            "confidence": "float",
+            "evidence": [
+              "int"
+            ],
+            "next_step": "str",
+            "provenance": "str",
+            "status": "str",
+            "text": "str",
+            "type": "str"
+          }
+        ],
+        "types": [
+          "str"
+        ]
+      },
+      "api_version": "str",
+      "schema_version": "str"
+    },
+    "/api/v1/cognitive-twin": {
+      "api_version": "str",
+      "cognitive_twin": {
+        "decision_history": [
+          {
+            "confidence": "float",
+            "epistemic": "str",
+            "evidence": [
+              "int"
+            ],
+            "provenance": "str",
+            "text": "str"
+          }
+        ],
+        "epistemic_legend": [
+          "str"
+        ],
+        "last_update_seq": "int",
+        "model_version": "str",
+        "recent_observations": [
+          {
+            "confidence": "float",
+            "epistemic": "str",
+            "evidence": [
+              "int"
+            ],
+            "provenance": "str",
+            "text": "str"
+          }
+        ],
+        "relationships": [
+          {
+            "confidence": "float",
+            "epistemic": "str",
+            "evidence": [
+              "int"
+            ],
+            "provenance": "str",
+            "text": "str"
+          }
+        ],
+        "relevant_memories": [
+          {
+            "confidence": "float",
+            "epistemic": "str",
+            "evidence": [
+              "int"
+            ],
+            "provenance": "str",
+            "text": "str"
+          }
+        ],
+        "state": {
+          "active_projects": [
+            {
+              "confidence": "float",
+              "epistemic": "str",
+              "evidence": [
+                "int"
+              ],
+              "provenance": "str",
+              "text": "str"
+            }
+          ],
+          "closed_loops": [
+            {
+              "confidence": "float",
+              "epistemic": "str",
+              "evidence": [
+                "int"
+              ],
+              "provenance": "str",
+              "text": "str"
+            }
+          ],
+          "current_focus": {
+            "confidence": "float",
+            "epistemic": "str",
+            "evidence": [
+              "int"
+            ],
+            "provenance": "str",
+            "text": "str"
+          },
+          "open_loops": [
+            {
+              "confidence": "float",
+              "epistemic": "str",
+              "evidence": [
+                "int"
+              ],
+              "provenance": "str",
+              "text": "str"
+            }
+          ]
+        },
+        "summary": "str"
+      },
+      "model_version": "str",
+      "schema_version": "str"
+    },
+    "/api/v1/decisions": {
+      "api_version": "str",
+      "items": [
+        {
+          "can_execute": "bool",
+          "council_approved": "bool",
+          "decision_id": "str",
+          "evidence_stage": "str",
+          "executed_seq": "NoneType",
+          "human_ratified": "bool",
+          "lifecycle": [
+            "str"
+          ],
+          "proposal_seq": "int",
+          "reason_hash": "str",
+          "rejected": "bool",
+          "reversible": "bool",
+          "risk": "str",
+          "stage": "str",
+          "status": "str",
+          "title": "str"
+        }
+      ],
+      "schema_version": "str"
+    },
+    "/api/v1/decisions/D-CORPUS-1001": {
+      "api_version": "str",
+      "item": {
+        "can_execute": "bool",
+        "council_approved": "bool",
+        "decision_id": "str",
+        "evidence_stage": "str",
+        "executed_seq": "NoneType",
+        "human_ratified": "bool",
+        "lifecycle": [
+          "str"
+        ],
+        "proposal_seq": "int",
+        "reason_hash": "str",
+        "rejected": "bool",
+        "reversible": "bool",
+        "risk": "str",
+        "stage": "str",
+        "status": "str",
+        "title": "str"
+      },
+      "schema_version": "str"
+    },
+    "/api/v1/evidence/verification": {
+      "api_version": "str",
+      "evidence_integrity": "str",
+      "ledger": {
+        "broken_seq": "NoneType",
+        "integrity": "str",
+        "valid": "bool"
+      },
+      "schema_version": "str",
+      "signature_status": "str"
+    },
+    "/api/v1/ledger": {
+      "api_version": "str",
+      "events": [
+        {
+          "event": "str",
+          "kind": "str",
+          "payload": {
+            "tension": "int",
+            "title": "str"
+          },
+          "schema_version": "str",
+          "source": "str",
+          "timestamp": "int"
+        }
+      ],
+      "genesis_sequence": "int",
+      "head_sequence": "int",
+      "ledger": {
+        "broken_seq": "NoneType",
+        "integrity": "str",
+        "valid": "bool"
+      },
+      "records": "int",
+      "schema_version": "str"
+    },
+    "/api/v1/ledger/events/1": {
+      "api_version": "str",
+      "event": {
+        "event": "str",
+        "kind": "str",
+        "payload": {
+          "tension": "int",
+          "title": "str"
+        },
+        "schema_version": "str",
+        "source": "str",
+        "timestamp": "int"
+      },
+      "schema_version": "str"
+    },
+    "/api/v1/memory": {
+      "api_version": "str",
+      "count": "int",
+      "items": [
+        {
+          "event": "str",
+          "id": "str",
+          "kind": "str",
+          "payload": {
+            "tension": "int",
+            "title": "str"
+          },
+          "provenance": "str"
+        }
+      ],
+      "schema_version": "str"
+    },
+    "/api/v1/memory/1": {
+      "api_version": "str",
+      "item": {
+        "event": "str",
+        "id": "str",
+        "kind": "str",
+        "payload": {
+          "tension": "int",
+          "title": "str"
+        },
+        "provenance": "str"
+      },
+      "schema_version": "str"
+    },
+    "/api/v1/replay/status": {
+      "api_version": "str",
+      "events": "int",
+      "head_sequence": "int",
+      "ledger": {
+        "broken_seq": "NoneType",
+        "integrity": "str",
+        "valid": "bool"
+      },
+      "refuses_when_compromised": "bool",
+      "schema_version": "str"
+    },
+    "/api/v1/status": {
+      "api_version": "str",
+      "ledger": {
+        "broken_seq": "NoneType",
+        "integrity": "str",
+        "valid": "bool"
+      },
+      "records": "int",
+      "revision": "int",
+      "schema_version": "str",
+      "status": "str"
+    }
+  },
+  "schema_version": "v2"
+}

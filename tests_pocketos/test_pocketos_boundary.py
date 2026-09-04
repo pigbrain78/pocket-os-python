@@ -228,3 +228,44 @@ def test_committed_openapi_artifact_is_scoped_to_v1():
     assert paths, "artifact has no paths"
     assert all(p.startswith("/api/v1") for p in paths), "non-v1 path leaked into artifact"
     assert not any(p.endswith("/execute") for p in paths)
+
+
+def _skeleton(obj, mask):
+    if isinstance(obj, dict):
+        return {k: _skeleton(v, mask) for k, v in obj.items() if k not in mask}
+    if isinstance(obj, list):
+        return [_skeleton(obj[0], mask)] if obj else []
+    return type(obj).__name__
+
+
+def test_contract_fixture_snapshot_is_stable():
+    # The committed contract fixture is a golden structural snapshot of the
+    # /api/v1 responses. Re-derive the same skeleton from the live app and diff
+    # it against the committed artifact: any drift (renamed/added/removed keys,
+    # dropped epistemic markers, new nesting) fails here. Volatile values
+    # (request ids, hashes, timestamps) are masked and do not cause failures.
+    import os as _os
+    mask = {"request_id", "hash", "previous_hash", "event_id", "occurred_at",
+            "server_time", "sequence"}
+    paths = [
+        "/api/v1/status", "/api/v1/memory", "/api/v1/memory/1",
+        "/api/v1/cognitive-twin", "/api/v1/ai-shadow", "/api/v1/decisions",
+        "/api/v1/decisions/D-CORPUS-1001", "/api/v1/ledger",
+        "/api/v1/ledger/events/1", "/api/v1/replay/status",
+        "/api/v1/evidence/verification",
+    ]
+    fixture_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                                 "tests_pocketos", "fixtures", "contract_v1_snapshot.json")
+    with open(fixture_path) as f:
+        fixture = json.load(f)
+    assert fixture["contract_version"] == 1
+    for p in paths:
+        r = client.get(p)
+        assert r.status_code == 200, f"{p} returned {r.status_code}"
+        live = _skeleton(r.json(), mask)
+        assert p in fixture["paths"], f"path {p} not in committed snapshot"
+        assert live == fixture["paths"][p], (
+            f"contract drift at {p}: committed fixture no longer matches the live "
+            f"/api/v1 response. Regenerate the snapshot only after an intentional, "
+            f"versioned contract change."
+        )
