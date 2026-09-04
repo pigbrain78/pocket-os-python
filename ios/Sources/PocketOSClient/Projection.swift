@@ -171,6 +171,11 @@ public extension PocketTwinProjection {
         _ = token
         return token
     }
+
+    /// Stop reconciling from the live spine for the given subscription token.
+    func stopReconciling(_ token: UUID) {
+        client.unsubscribe(token)
+    }
 }
 
 public extension PocketShadowProjection {
