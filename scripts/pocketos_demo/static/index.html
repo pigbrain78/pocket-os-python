@@ -8,6 +8,13 @@
 </head>
 <body>
   <div id="root"></div>
+  <!-- Pocket OS client initialization —
+       1. Config: runtime-injected API origin (default: same-origin)
+       2. Transport: owns wire paths, auth headers, error normalization
+       3. Client: domain facade the UI consumes
+       4. App: the demo console UI
+  -->
+  <script src="/static/lib/pocket/config.js"></script>
   <script src="/static/lib/pocket/contract_spec.js"></script>
   <script src="/static/lib/pocket/transport.js"></script>
   <script src="/static/lib/pocket/index.js"></script>
