@@ -8,3 +8,6 @@ __pycache__/
 raw_data/
 *.log
 nohup.out
+
+# Swift Package Manager
+.build/

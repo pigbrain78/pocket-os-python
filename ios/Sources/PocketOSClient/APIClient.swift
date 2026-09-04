@@ -6,6 +6,9 @@
 // responsibilities so both clients enforce the same boundary.
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // MARK: - Errors
 public enum PocketAPIError: Error, Sendable {
@@ -133,7 +136,7 @@ public actor PocketTransport {
         let body = try JSONSerialization.data(withJSONObject: ["username": username, "password": password])
         struct R: Codable { let token: String }
         let r = try await request("POST", "api/login", body: body, as: R.self)
-        await setToken(r.token)
+        setToken(r.token)
     }
     public func logout() async throws {
         // Revoke server-side. POST with no body through the auth path.
@@ -142,7 +145,7 @@ public actor PocketTransport {
         req.httpMethod = "POST"
         for (k, v) in authHeaders { req.setValue(v, forHTTPHeaderField: k) }
         _ = try? await URLSession.shared.data(for: req)
-        await setToken(nil)
+        setToken(nil)
     }
     public func propose(title: String, sendToCouncil: Bool = true) async throws -> Decision {
         struct Body: Codable { let title: String; let sendToCouncil: Bool
