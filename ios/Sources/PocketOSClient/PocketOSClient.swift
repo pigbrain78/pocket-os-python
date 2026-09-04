@@ -10,9 +10,29 @@ public final class PocketOSClient: @unchecked Sendable {
     public let transport: PocketTransport
     /// Live event spine subscription. Mirror of pocket.events.subscribe.
     public let events = EventQueue()
+    private var stream: PocketSSEClient?
+    private let baseURL: URL
 
     public init(baseURL: URL) {
+        self.baseURL = baseURL
         self.transport = PocketTransport(baseURL: baseURL)
+    }
+
+    // MARK: - Live spine (SSE)
+    /// Begin consuming the /api/stream SSE spine; events are delivered to
+    /// observers registered via subscribe(). Observational only.
+    public func startStream() async {
+        if stream == nil { stream = PocketSSEClient(baseURL: baseURL, queue: events) }
+        await stream?.connect()
+    }
+    public func stopStream() async {
+        await stream?.disconnect()
+    }
+    public func streamStatus() async -> StreamStatus? {
+        await stream?.currentStatus()
+    }
+    public func onStreamStatus(_ fn: @escaping (StreamStatus) -> Void) async {
+        await stream?.onStatus(fn)
     }
 
     // MARK: - Session
