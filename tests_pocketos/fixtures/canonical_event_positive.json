@@ -1,0 +1,17 @@
+{
+  "type": "decision.proposed",
+  "event_id": "39f277f61ff65d604bc7fb5c518b778ab76b5c90c8a49fe4fc76ccfea72e4227",
+  "sequence": 26,
+  "occurred_at": 0,
+  "source": "WebClient",
+  "kind": "decision",
+  "previous_hash": "cc2b2af164399aa6f770691d676bb7e2a33c21d36f39a88c22cb5a251812ab84",
+  "schema_version": "v2",
+  "payload": {
+    "title": "contract-capture",
+    "decision_id": "D-6035A4149C9A2860",
+    "risk": "MEDIUM",
+    "reversible": true,
+    "send_to_council": true
+  }
+}

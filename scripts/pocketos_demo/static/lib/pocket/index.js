@@ -50,11 +50,17 @@
     es.addEventListener("event", function (e) {
       var payload = _safeParse(e.data);
       if (!payload) return;
+      // Canonical live-event envelope — the same field set the Swift client's
+      // EventEnvelope decodes. Forward every provenance field so a client can
+      // reason about type, source, and chain position, never just payload.
       emit({
         type: payload.type || "event",
         event_id: payload.event_id || "",
         sequence: typeof payload.sequence === "number" ? payload.sequence : null,
-        occurred_at: payload.timestamp || null,
+        occurred_at: typeof payload.occurred_at === "number" ? payload.occurred_at : null,
+        source: payload.source || "",
+        kind: payload.kind || "",
+        previous_hash: payload.previous_hash || "",
         schema_version: payload.schema_version || "v2",
         payload: payload.payload || {},
       });

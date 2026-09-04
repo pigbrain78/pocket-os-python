@@ -188,12 +188,17 @@ public struct EventEnvelope: Codable, Sendable {
     public var eventID: String?
     public var sequence: Int?
     public var occurredAt: Int64?
+    public var source: String?
+    public var kind: String?
+    public var previousHash: String?
     public var schemaVersion: String
     public var payload: [String: JSONValue]
     enum CodingKeys: String, CodingKey {
         case type, sequence, payload
         case eventID = "event_id"
         case occurredAt = "occurred_at"
+        case source, kind
+        case previousHash = "previous_hash"
         case schemaVersion = "schema_version"
     }
 }

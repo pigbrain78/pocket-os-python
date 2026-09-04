@@ -92,6 +92,11 @@ public struct MemoryRecord: Codable, Sendable {
 // Minimal JSON value erasure so nested payloads decode without lossy casts.
 public enum JSONValue: Codable, Sendable {
     case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+    /// Convenience accessor for reading nested payload strings.
+    public var stringValue: String? {
+        if case .string(let s) = self { return s }
+        return nil
+    }
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null }

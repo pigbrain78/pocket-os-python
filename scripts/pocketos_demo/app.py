@@ -369,11 +369,29 @@ _EVENT_LOCK = threading.RLock()
 def _broadcast(record: dict[str, Any]) -> None:
     import asyncio as _aio
 
-    payload = json.dumps({"type": record.get("event") or "record.append",
-                          "sequence": record.get("sequence"),
-                          "schema_version": record.get("schema_version", "v2"),
-                          "event_id": record.get("hash", ""),
-                          "payload": record.get("payload", {})})
+    # Canonical live-event envelope. The SAME event must decode into equivalent
+    # semantic fields in every client (web + Swift). It therefore carries the
+    # full per-record provenance, not just type/payload:
+    #   type            -> event_type (decision.proposed, memory.created, ...)
+    #   event_id        -> stable id (the record hash on this demo backend)
+    #   sequence        -> ledger sequence number
+    #   occurred_at     -> authoritative server timestamp (record.timestamp)
+    #   source          -> emitting actor (PocketOS / Governance / ...)
+    #   kind            -> domain class (memory, decision, governance, ...)
+    #   previous_hash   -> predecessor for chain traceability
+    #   schema_version  -> event schema version
+    #   payload         -> event-specific body
+    payload = json.dumps({
+        "type": record.get("event") or "record.append",
+        "event_id": record.get("hash", ""),
+        "sequence": record.get("sequence"),
+        "occurred_at": record.get("timestamp"),
+        "source": record.get("source"),
+        "kind": record.get("kind"),
+        "previous_hash": record.get("previous_hash"),
+        "schema_version": record.get("schema_version", "v2"),
+        "payload": record.get("payload", {}),
+    })
     with _EVENT_LOCK:
         dead = []
         for sid, q in list(_EVENT_SUBSCRIBERS.items()):
