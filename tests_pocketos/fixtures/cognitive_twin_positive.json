@@ -1,0 +1,275 @@
+{
+  "cognitive_twin": {
+    "decision_history": [
+      {
+        "confidence": 0.99,
+        "epistemic": "VERIFIED",
+        "evidence": [
+          5
+        ],
+        "provenance": "ledger#5",
+        "text": "approved: approve agent action"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "VERIFIED",
+        "evidence": [
+          6
+        ],
+        "provenance": "ledger#6",
+        "text": "denied: deny external publish"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "VERIFIED",
+        "evidence": [
+          7
+        ],
+        "provenance": "ledger#7",
+        "text": "reversed: reverse stale approval"
+      }
+    ],
+    "epistemic_legend": [
+      "OBSERVED",
+      "VERIFIED",
+      "INFERRED",
+      "UNCERTAIN",
+      "REJECTED",
+      "STALE"
+    ],
+    "last_update_seq": 25,
+    "model_version": "twin-1.0",
+    "recent_observations": [
+      {
+        "confidence": 0.99,
+        "epistemic": "OBSERVED",
+        "evidence": [
+          20
+        ],
+        "provenance": "ledger#20",
+        "text": "task.created: integrate replay scrubber"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "OBSERVED",
+        "evidence": [
+          21
+        ],
+        "provenance": "ledger#21",
+        "text": "knowledge.document: PocketOS architecture notes"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "OBSERVED",
+        "evidence": [
+          22
+        ],
+        "provenance": "ledger#22",
+        "text": "knowledge.document: iPhone client requirements"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "OBSERVED",
+        "evidence": [
+          23
+        ],
+        "provenance": "ledger#23",
+        "text": "agent.observation: found failing test in web harness"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "OBSERVED",
+        "evidence": [
+          24
+        ],
+        "provenance": "ledger#24",
+        "text": "system.sync: edge node sync complete"
+      },
+      {
+        "confidence": 0.99,
+        "epistemic": "OBSERVED",
+        "evidence": [
+          25
+        ],
+        "provenance": "ledger#25",
+        "text": "system.health: all subsystems nominal"
+      }
+    ],
+    "relationships": [
+      {
+        "confidence": 0.66,
+        "epistemic": "INFERRED",
+        "evidence": [
+          15
+        ],
+        "provenance": "ledger#15",
+        "text": "memory \u201cplan for PocketOS web control plane\u201d relates to current focus"
+      }
+    ],
+    "relevant_memories": [
+      {
+        "confidence": 0.98,
+        "epistemic": "VERIFIED",
+        "evidence": [
+          15
+        ],
+        "provenance": "ledger#15",
+        "text": "plan for PocketOS web control plane"
+      },
+      {
+        "confidence": 0.98,
+        "epistemic": "VERIFIED",
+        "evidence": [
+          16
+        ],
+        "provenance": "ledger#16",
+        "text": "edge node sync cadence"
+      },
+      {
+        "confidence": 0.5,
+        "epistemic": "UNCERTAIN",
+        "evidence": [
+          1
+        ],
+        "provenance": "ledger#1",
+        "text": "conflicting claim: system state: web"
+      },
+      {
+        "confidence": 0.5,
+        "epistemic": "UNCERTAIN",
+        "evidence": [
+          2
+        ],
+        "provenance": "ledger#2",
+        "text": "conflicting claim: system state: saas"
+      },
+      {
+        "confidence": 0.5,
+        "epistemic": "UNCERTAIN",
+        "evidence": [
+          3
+        ],
+        "provenance": "ledger#3",
+        "text": "conflicting claim: system state: web"
+      },
+      {
+        "confidence": 0.5,
+        "epistemic": "UNCERTAIN",
+        "evidence": [
+          4
+        ],
+        "provenance": "ledger#4",
+        "text": "conflicting claim: system state: saas"
+      }
+    ],
+    "state": {
+      "active_projects": [
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            1
+          ],
+          "provenance": "ledger#1",
+          "text": "PocketOS \u2014 12 events"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            8
+          ],
+          "provenance": "ledger#8",
+          "text": "AI Shadow \u2014 3 events"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            5
+          ],
+          "provenance": "ledger#5",
+          "text": "Governance \u2014 3 events"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            9
+          ],
+          "provenance": "ledger#9",
+          "text": "Council \u2014 2 events"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            10
+          ],
+          "provenance": "ledger#10",
+          "text": "Human \u2014 2 events"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            21
+          ],
+          "provenance": "ledger#21",
+          "text": "Import \u2014 2 events"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            23
+          ],
+          "provenance": "ledger#23",
+          "text": "RALPH5 \u2014 1 events"
+        }
+      ],
+      "closed_loops": [
+        {
+          "confidence": 0.99,
+          "epistemic": "VERIFIED",
+          "evidence": [
+            17
+          ],
+          "provenance": "ledger#17",
+          "text": "completed: scaffold web console"
+        }
+      ],
+      "current_focus": {
+        "confidence": 0.7,
+        "epistemic": "INFERRED",
+        "evidence": [
+          17
+        ],
+        "provenance": "ledger#17",
+        "text": "Focus appears to be \u201cscaffold web console\u201d"
+      },
+      "open_loops": [
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            18
+          ],
+          "provenance": "ledger#18",
+          "text": "open loop: wire governance console"
+        },
+        {
+          "confidence": 0.99,
+          "epistemic": "OBSERVED",
+          "evidence": [
+            20
+          ],
+          "provenance": "ledger#20",
+          "text": "open loop: integrate replay scrubber"
+        }
+      ]
+    },
+    "summary": "Twin derives 6 memory reference(s), 2 open loop(s), 1 inferred relationship(s), and a current focus (inferred) from 25 ledger event(s) ending at sequence 25."
+  },
+  "schema_version": "v2"
+}
