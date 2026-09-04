@@ -23,6 +23,7 @@
     REPLAY_REJECTED: "REPLAY_REJECTED",
     VERIFICATION_FAILED: "VERIFICATION_FAILED",
     RATE_LIMITED: "RATE_LIMITED",
+    CONTRACT_MISMATCH: "CONTRACT_MISMATCH",
     INTERNAL_ERROR: "INTERNAL_ERROR",
     NETWORK_ERROR: "NETWORK_ERROR",
   };
@@ -48,6 +49,38 @@
       case 422: return CODES.VALIDATION_FAILED;
       case 429: return CODES.RATE_LIMITED;
       default: return CODES.INTERNAL_ERROR;
+    }
+  }
+
+  // ---- client-side contract enforcement -------------------------------
+  // The committed contract spec (contract_spec.js, generated from the golden
+  // fixture) is the shape the client is allowed to consume. Every /api/v1
+  // success response is validated against it before the UI sees the data, so a
+  // drifted server shape cannot silently pass through. If the contract has
+  // intentionally changed, the fixture/spec are regenerated and versioned
+  // together — the client never silently tolerates drift.
+  function validateV1(path, json) {
+    var spec = global.__pocketContract;
+    if (!spec || !spec.paths) return; // spec not loaded
+    var required = spec.paths[path];
+    if (!required) return; // path not under the versioned contract spec
+    if (!json || typeof json !== "object") {
+      throw new PocketError(CODES.CONTRACT_MISMATCH, "response is not an object for " + path, null, null);
+    }
+    var missing = (required || []).filter(function (k) { return !(k in json); });
+    if (missing.length) {
+      throw new PocketError(
+        CODES.CONTRACT_MISMATCH,
+        "contract drift at " + path + ": missing " + missing.join(",") + " — server shape no longer matches the locked contract",
+        json.request_id, null
+      );
+    }
+    if (typeof json.api_version === "undefined" || typeof json.schema_version === "undefined") {
+      throw new PocketError(
+        CODES.CONTRACT_MISMATCH,
+        "contract drift at " + path + ": missing version envelope (api_version/schema_version)",
+        json.request_id, null
+      );
     }
   }
 
@@ -83,6 +116,12 @@
             }
             throw new PocketError(code, err.message || res.statusText, rid || err.request_id, res.status);
           }
+          // Enforce the locked contract shape on the canonical /api/v1 surface
+          // before the UI consumes the payload. A drifted server response is
+          // rejected as CONTRACT_MISMATCH, never silently passed through.
+          // Validate against the FULL wire path (base + path) because the
+          // committed spec keys are absolute (/api/v1/status), not relative.
+          if (base === BASE) validateV1(base + path, json);
           return json;
         });
       }).catch(function (e) {

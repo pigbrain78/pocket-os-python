@@ -269,3 +269,51 @@ def test_contract_fixture_snapshot_is_stable():
             f"/api/v1 response. Regenerate the snapshot only after an intentional, "
             f"versioned contract change."
         )
+
+
+def _extract_contract_spec(spec_js):
+    """Extract the __pocketContract object literal from the client JS spec."""
+    import re as _re
+    txt = open(spec_js).read()
+    m = _re.search(r"__pocketContract = (\{.*?\});", txt, _re.DOTALL)
+    assert m, "could not locate __pocketContract in contract_spec.js"
+    return json.loads(m.group(1))
+
+
+def test_client_contract_spec_matches_fixture():
+    # The client-enforced spec (contract_spec.js) is generated from the golden
+    # fixture. If a drift guard regenerates the fixture without refreshing the
+    # client spec, or vice versa, the client and server would disagree on the
+    # shape. This test locks them together.
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fixture = json.load(open(os.path.join(root, "tests_pocketos", "fixtures", "contract_v1_snapshot.json")))
+    spec = _extract_contract_spec(os.path.join(root, "scripts", "pocketos_demo", "static", "lib", "pocket", "contract_spec.js"))
+    assert spec["contract_version"] == fixture["contract_version"]
+    assert spec["schema_version"] == fixture["schema_version"]
+    # For every fixture path, the client spec must require exactly the
+    # non-volatile top-level keys the fixture captured.
+    for path, skel in fixture["paths"].items():
+        expected = [k for k in skel if k not in ("request_id", "api_version", "schema_version")]
+        assert path in spec["paths"], f"client spec missing path {path}"
+        assert sorted(spec["paths"][path]) == sorted(expected), (
+            f"client spec for {path} diverged from fixture: spec={sorted(spec['paths'][path])} fixture={sorted(expected)}"
+        )
+
+
+def test_live_v1_endpoints_satisfy_client_contract():
+    # Prove "clients cannot bypass the shape": every live /api/v1 read endpoint
+    # must supply at least the keys the client transport enforces. If the server
+    # ever omits a required field, the browser client would reject it — caught
+    # here server-side before it ever reaches a client.
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = _extract_contract_spec(os.path.join(root, "scripts", "pocketos_demo", "static", "lib", "pocket", "contract_spec.js"))
+    for path, required in spec["paths"].items():
+        # Only GET read endpoints are client-consumed as envelopes.
+        if "/propose" in path or path.endswith(("/ratify", "/reject", "/execute")):
+            continue
+        r = client.get(path)
+        assert r.status_code == 200, f"{path} not 200"
+        body = r.json()
+        missing = [k for k in required if k not in body]
+        assert not missing, f"live {path} violates client contract: missing {missing}"
+        assert "api_version" in body and "schema_version" in body, f"live {path} missing version envelope"
