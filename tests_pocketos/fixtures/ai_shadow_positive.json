@@ -1,0 +1,67 @@
+{
+  "ai_shadow": {
+    "authority_boundary": {
+      "execution_requires": [
+        "COUNCIL_CONSENSUS",
+        "HUMAN_RATIFICATION"
+      ],
+      "shadow_authority": "NONE",
+      "shadow_can_execute": false,
+      "shadow_can_ratify": false
+    },
+    "items": [
+      {
+        "authority": "NONE",
+        "confidence": 0.91,
+        "evidence": [
+          17,
+          18,
+          20
+        ],
+        "next_step": "Review open task loops.",
+        "provenance": "ledger#17 (task.created)",
+        "status": "advisory",
+        "text": "Shadow observes active project work with open task loops.",
+        "type": "OBSERVATION"
+      },
+      {
+        "authority": "NONE",
+        "confidence": 0.93,
+        "evidence": [
+          1,
+          2,
+          3
+        ],
+        "next_step": "Reconcile conflicting memory claims.",
+        "provenance": "ledger#1 (memory.created)",
+        "status": "advisory",
+        "text": "Shadow detects conflicting state claims in memory.",
+        "type": "WARNING"
+      },
+      {
+        "authority": "NONE",
+        "confidence": 0.79,
+        "evidence": [
+          21,
+          22
+        ],
+        "next_step": "Send to council for review.",
+        "provenance": "ledger#-",
+        "status": "advisory",
+        "text": "Shadow proposes reviewing current project dependencies.",
+        "type": "PROPOSAL"
+      }
+    ],
+    "types": [
+      "OBSERVATION",
+      "INSIGHT",
+      "WARNING",
+      "OPPORTUNITY",
+      "QUESTION",
+      "RECOMMENDATION",
+      "PROPOSAL"
+    ]
+  },
+  "api_version": "1",
+  "schema_version": "v2"
+}
