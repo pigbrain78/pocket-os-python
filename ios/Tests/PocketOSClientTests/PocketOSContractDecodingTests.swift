@@ -46,7 +46,7 @@ final class PocketOSContractDecodingTests: XCTestCase {
         let json = """
         {"types":["OBSERVATION"],"authority_boundary":{
          "shadow_authority":"NONE","shadow_can_execute":false,
-         "shadow_can_ratify":false,"execution_requires":"HUMAN_RATIFICATION"},
+         "shadow_can_ratify":false,"execution_requires":["HUMAN_RATIFICATION"]},
          "items":[{"type":"OBSERVATION","text":"three open tasks",
          "confidence":0.91,"evidence":[182],"provenance":"ledger#182",
          "status":"ACTIVE","authority":"NONE","next_step":null}]}
@@ -54,7 +54,7 @@ final class PocketOSContractDecodingTests: XCTestCase {
         let shadow = try JSONDecoder().decode(AIShadow.self, from: json)
         XCTAssertEqual(shadow.authorityBoundary.shadowAuthority, "NONE")
         XCTAssertFalse(shadow.authorityBoundary.shadowCanExecute)
-        XCTAssertEqual(shadow.authorityBoundary.executionRequires, "HUMAN_RATIFICATION")
+        XCTAssertEqual(shadow.authorityBoundary.executionRequires, ["HUMAN_RATIFICATION"])
         XCTAssertEqual(shadow.items.first?.authority, "NONE")
     }
 

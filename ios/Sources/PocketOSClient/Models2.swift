@@ -76,7 +76,8 @@ public struct AuthorityBoundary: Codable, Sendable {
     public var shadowAuthority: String
     public var shadowCanExecute: Bool
     public var shadowCanRatify: Bool
-    public var executionRequires: String
+    /// Ordered list of prerequisites (e.g. ["COUNCIL_CONSENSUS","HUMAN_RATIFICATION"]).
+    public var executionRequires: [String]
     enum CodingKeys: String, CodingKey {
         case shadowAuthority = "shadow_authority"
         case shadowCanExecute = "shadow_can_execute"
