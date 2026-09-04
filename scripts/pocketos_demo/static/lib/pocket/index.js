@@ -34,26 +34,75 @@
   // pocket.events.subscribe(cb); the client forwards normalized observations
   // and lets the subscriber reconcile with the authoritative server. Receiving
   // an event never means this client caused it.
+  //
+  // Reconnection strategy: exponential backoff with jitter, resync on reconnect.
   var _es = null;
+  var _reconnectAttempts = 0;
+  var _maxReconnectAttempts = 6; // 1s, 2s, 4s, 8s, 16s, 30s, then capped at 30s
   var _statusListeners = [];
-  function status(s) { for (var i = 0; i < _statusListeners.length; i++) { try { _statusListeners[i](s); } catch (e) {} } }
+  var _lastEventSequence = null; // Track last successful event for cursor-based recovery
+
+  function status(s) {
+    for (var i = 0; i < _statusListeners.length; i++) {
+      try { _statusListeners[i](s); } catch (e) {}
+    }
+  }
+
   function _safeParse(text) {
     try { return JSON.parse(text); } catch (e) { return null; }
   }
+
+  function _backoffDelay(attempt) {
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped).
+    var delays = [1000, 2000, 4000, 8000, 16000, 30000];
+    var base = delays[Math.min(attempt, delays.length - 1)];
+    // Add jitter: ±10% of base delay
+    var jitter = (Math.random() - 0.5) * 0.2 * base;
+    return Math.max(0, base + jitter);
+  }
+
+  function _attemptReconnect() {
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      // Cap at max delay (30s) rather than growing forever.
+      _reconnectAttempts = _maxReconnectAttempts - 1;
+    }
+    var delay = _backoffDelay(_reconnectAttempts);
+    _reconnectAttempts += 1;
+    status("reconnecting");
+    setTimeout(function () {
+      if (_es === null) {
+        // Still disconnected; attempt to reconnect.
+        connect();
+      }
+    }, delay);
+  }
+
   function connect() {
     if (typeof EventSource === "undefined") { status("unsupported"); return; }
     if (_es) return;
     status("connecting");
-    var es = new EventSource("/api/stream");
+    var config = global.__pocketConfig;
+    var streamUrl = config ? config.streamURL : "/api/stream";
+    var es = new EventSource(streamUrl);
     _es = es;
-    es.addEventListener("hello", function () { status("live"); });
+
+    es.addEventListener("hello", function (e) {
+      var payload = _safeParse(e.data);
+      if (payload) {
+        // Reset backoff on successful connection.
+        _reconnectAttempts = 0;
+      }
+      status("live");
+    });
+
     es.addEventListener("event", function (e) {
       var payload = _safeParse(e.data);
       if (!payload) return;
+
       // Canonical live-event envelope — the same field set the Swift client's
       // EventEnvelope decodes. Forward every provenance field so a client can
       // reason about type, source, and chain position, never just payload.
-      emit({
+      var event = {
         type: payload.type || "event",
         event_id: payload.event_id || "",
         sequence: typeof payload.sequence === "number" ? payload.sequence : null,
@@ -63,26 +112,52 @@
         previous_hash: payload.previous_hash || "",
         schema_version: payload.schema_version || "v2",
         payload: payload.payload || {},
-      });
+      };
+
+      // Track the last successfully processed event sequence for cursor-based
+      // recovery (when the server supports it). This allows the client to
+      // request only events after this sequence on reconnect, rather than
+      // refetching the entire state.
+      if (typeof event.sequence === "number" && event.sequence > 0) {
+        _lastEventSequence = event.sequence;
+      }
+
+      emit(event);
       status("live");
     });
+
     es.onerror = function () {
-      // Auto-reconnect is EventSource's own; expose the state so the UI can
-      // reconcile any missed events by refetching authoritative projections.
-      status("reconnecting");
+      // EventSource auto-reconnect is disabled; we manage reconnection with
+      // exponential backoff. On error, close the connection and schedule
+      // a reconnect attempt.
+      if (_es) {
+        _es.close();
+        _es = null;
+      }
+      _attemptReconnect();
     };
   }
+
   function disconnect() {
     if (_es) { _es.close(); _es = null; }
+    _reconnectAttempts = 0;
   }
+
   function onStatus(cb) { _statusListeners.push(cb); }
 
   // Events: the UI registers one or more listeners; on a live SSE event the
   // client forwards normalized observations and the subscriber reconciles by
   // refetching authoritative projections.
   var _listeners = [];
-  function subscribe(fn) { _listeners.push(fn); return function () { _listeners = _listeners.filter(function (x) { return x !== fn; }); }; }
-  function emit(event) { for (var i = 0; i < _listeners.length; i++) { try { _listeners[i](event); } catch (e) {} } }
+  function subscribe(fn) {
+    _listeners.push(fn);
+    return function () { _listeners = _listeners.filter(function (x) { return x !== fn; }); };
+  }
+  function emit(event) {
+    for (var i = 0; i < _listeners.length; i++) {
+      try { _listeners[i](event); } catch (e) {}
+    }
+  }
 
   // ---- domain methods (queries) ----------------------------------------
   var pocket = {
@@ -147,6 +222,7 @@
       onStatus: onStatus,
       connect: connect,
       disconnect: disconnect,
+      lastSequence: function () { return _lastEventSequence; },
     },
 
     // session (transport-level concerns exposed deliberately for login UI)
@@ -171,7 +247,7 @@
       twin: function () { return http.getLegacy("/twin"); },
       shadow: function () { return http.getLegacy("/shadow"); },
       decisions: function () { return http.getLegacy("/decisions"); },
-      streamUrl: function () { return "/api/stream"; },
+      streamUrl: function () { return global.__pocketConfig ? global.__pocketConfig.streamURL : "/api/stream"; },
     },
 
     // demo: demo-gated mutators (reset/tamper) and the decision command verbs
