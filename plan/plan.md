@@ -1,7 +1,6 @@
-# Plan: Web client consumes the typed /api/v1 contract end-to-end
+# Plan: Scaffold iOS client consuming the /api/v1 contract
 
-- [x] Confirm baseline green (101 unit/API + browser), tree intact at fcd661b — Confirming the full baseline suite is green before adding client-side contract enforcement — Baseline green (101). Generating a client-loadable contract snapshot from the committed fixture
-- [x] Add a schema-driven response validator to the pocket transport that checks every /api/v1 response against the committed contract shape — Client-side contract enforcement added to the transport (CONTRACT_MISMATCH on any drifted /api/v1 payload); browser suites still green
-- [x] Route UI reads (state/twin/shadow/decisions) through validated v1 domain methods, keeping console projections for the legacy composite shape only where the UI truly needs them — Proving the client transport rejects a drifted /api/v1 payload in a real browser — Client contract enforcement proven both ways: valid /api/v1 passes with envelope; drifted payload (missing records) rejected as CONTRACT_MISMATCH
-- [x] Prove the guard both ways: valid responses pass, a deliberately malformed response is rejected — Adding a committed guard test: client spec derives from the fixture; live /api/v1 endpoints conform to the enforced spec — Guard tests added and green — client spec locked to fixture; live /api/v1 endpoints proven to satisfy the enforced contract
-- [~] Run full suite + browser suites; commit and push — Running the full suite set, then committing and pushing the contract-consumption milestone
+- [x] Extract live /api/v1 field shapes (status, memory, twin, shadow, decision, ledger)
+- [x] Scaffold Swift Package skeleton (ios/): Package.swift, APIClient/transport, Codable models mirroring the contract — Scaffolding the Swift Package skeleton mirroring the /api/v1 contract — iOS skeleton scaffolded — Package.swift + Models + APIClient + facade, all balanced
+- [x] Add the same epistemic/authority discipline + governance-bound commands (no execute) — Cross-check caught AuthorityBoundary key mismatch — correcting the Swift model to the live contract keys — iOS Codable models cross-checked and corrected against live contract; guard test passes (19/19)
+- [~] Verify Swift files are well-formed (syntax check via a parser where possible); run suite; commit + push — Running the full suite set, then committing and pushing the iOS skeleton

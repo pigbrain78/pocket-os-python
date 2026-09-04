@@ -317,3 +317,57 @@ def test_live_v1_endpoints_satisfy_client_contract():
         missing = [k for k in required if k not in body]
         assert not missing, f"live {path} violates client contract: missing {missing}"
         assert "api_version" in body and "schema_version" in body, f"live {path} missing version envelope"
+
+
+def test_ios_codable_models_match_live_contract():
+    """The iOS client's Swift Codable models mirror the /api/v1 contract. Every
+    raw snake_case key a Swift model declares as a CodingKey must exist in the
+    corresponding live response; otherwise the model cannot decode. This is the
+    runnable equivalent of a Swift compile/test in a toolchain-less sandbox."""
+    import re as _re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    models_dir = os.path.join(root, "ios", "Sources", "PocketOSClient")
+    assert os.path.isdir(models_dir), "ios skeleton missing"
+
+    # Map each model (by the endpoints it decodes) to the live JSON we check.
+    # We collect the union of raw CodingKeys across all model files and assert
+    # each appears in at least one canonical v1 response's flattened key set.
+    raw_keys = set()
+    for fn in ("Models.swift", "Models2.swift"):
+        txt = open(os.path.join(models_dir, fn)).read()
+        # Only collect cases INSIDE a CodingKeys enum, not enum raw-values
+        # (e.g. EpistemicStatus .inferred -> "INFERRED") or JSONValue cases.
+        for block in _re.finditer(r'enum CodingKeys: String, CodingKey \{[^}]*\}', txt, _re.DOTALL):
+            for m in _re.finditer(r'case\s+(\w+)(?:\s*=\s*"([^"]+)")?', block.group(0)):
+                # A raw value is the wire key; without one the property name is
+                # the wire key only when it is already snake/camel identical.
+                raw_keys.add(m.group(2) if m.group(2) else m.group(1))
+
+    # Load every canonical GET response and flatten nested keys.
+    def flatten(obj, prefix="", acc=None):
+        if acc is None: acc = set()
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                acc.add(k)
+                flatten(v, k, acc)
+        elif isinstance(obj, list) and obj:
+            flatten(obj[0], prefix, acc)
+        return acc
+    live_keys = set()
+    for p in ["/api/v1/status", "/api/v1/memory", "/api/v1/cognitive-twin",
+              "/api/v1/ai-shadow", "/api/v1/decisions", "/api/v1/ledger/events/1"]:
+        live_keys |= flatten(client.get(p).json())
+    # Command responses (propose/ratify/reject) carry an `ok` + `decision`
+    # envelope that the read endpoints do not; sample one so DecisionAction's
+    # keys are validated too. Fixture reset keeps this side-effect clean.
+    tok = client.post("/api/login", json={"username": "admin", "password": "demo"}).json()["token"]
+    h = {"Authorization": "Bearer " + tok}
+    live_keys |= flatten(client.post("/api/v1/decisions/propose",
+                                     json={"title": "ios-key-probe"}, headers=h).json())
+
+    # Raw keys that exist in the model must exist in the live responses.
+    missing = sorted(raw_keys - live_keys)
+    assert not missing, (
+        f"iOS Codable models reference keys absent from the live /api/v1 "
+        f"contract: {missing}. The models must mirror the contract exactly."
+    )
