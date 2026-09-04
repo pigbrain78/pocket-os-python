@@ -1,7 +1,9 @@
-# Plan: Login rate-limiting milestone (commit + push)
+# Plan: Shared client/API boundary (plain-JS + FastAPI adaptation)
 
-- [x] Add per-IP login attempt tracking with lockout window — Login rate-limiting implemented — per-IP tracking, lockout, 429 with Retry-After
-- [ ] Enforce rate limit on /api/login; return 429 with Retry-After
-- [x] Add rate-limit tests (burst denied, lockout, reset after window) — Rate-limit tests pass — burst locks out with 429+Retry-After, success resets, lockout expires
-- [x] Run all suites green — Running the full auth suite and confirming no regressions before the commit — All unit/API suites green — auth 18, engines 25, replay 11, control-room 20, features 11
-- [~] Commit and push to origin — All suites green (99 tests). Committing the rate-limiting milestone and pushing to origin
+- [x] Record baseline — routes, frontend access points, tree, git sync, server INTACT — Baseline recorded — 18 API routes, 7 frontend data-access points, tree intact at 5305aac
+- [x] Add versioned /api/v1 domain router (status, memory, cognitive-twin, ai-shadow, decisions, ledger, replay) returning platform-neutral JSON — /api/v1 router added (status, memory, twin, shadow, decisions, ledger, replay, evidence, propose/ratify/reject). Verifying against the live server — /api/v1 verified live — status, memory, twin (epistemic preserved), shadow, ledger, decisions, replay, evidence, 404 handling all correct
+- [x] Add request-ID + normalized error model server-side (error codes preserved) — Normalized error model added — every HTTP error carries a machine-readable code + request_id; validation errors also normalize
+- [x] Build frontend pocket client (transport.js + index.js) exposing domain methods; UI stops calling raw /api routes — Building the pocket client layer (transport.js + index.js) over the /api/v1 contract — Pocket client built (transport + index) and syntax-clean. Confirming baseline suites still green before migrating the UI
+- [x] Migrate primary data access (refresh fns, actions) behind window.pocket — UI data access migrated behind window.pocket — no direct fetch/getJSON/postJSON/EventSource path remains in app.js
+- [x] Add boundary tests (error codes, no direct-bypass, epistemic/provenance preserved, no web-only fields) — UI migration verified — both browser suites pass with data access behind window.pocket. Adding client-boundary tests — Client-boundary suite green (13/13) — epistemic, provenance, normalized errors, no web-only fields, governance bypass prevention all verified
+- [~] Document contract (docs/POCKETOS_CLIENT_API.md); run all suites; commit + push — Writing the client API contract doc, then running all suites and committing + pushing — All suites green (112 tests). Committing the client/API boundary milestone and pushing to origin

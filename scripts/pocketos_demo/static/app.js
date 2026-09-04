@@ -39,67 +39,60 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  function authHeaders() {
-    return TOKEN ? { "Authorization": "Bearer " + TOKEN } : {};
-  }
-
-  function getJSON(url, cb) {
-    fetch(url).then(function (r) { return r.json(); }).then(cb).catch(function () {});
-  }
-
-  function postJSON(url, body, cb) {
-    fetch(url, {
-      method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-      body: JSON.stringify(body || {}),
-    }).then(function (r) { return r.json().catch(function () { return {}; }); })
-      .then(cb).catch(function () {});
-  }
+  // ------------------------------------------------------------- http
+  // The UI no longer calls fetch() or raw API routes directly. All data
+  // access is through the pocket client (window.pocket). The client owns the
+  // wire (transport), request ids, and error normalization.
 
   // ------------------------------------------------------------- session
   function loggedIn() { return !!TOKEN; }
   function hasPerm(p) { return !!session && session.permissions.indexOf(p) !== -1; }
 
+  function syncPocketToken() { pocket.session.setToken(TOKEN); }
+
   function refreshSession() {
     if (!TOKEN) { session = null; render(); return; }
-    fetch("/api/session/me", { headers: authHeaders() })
-      .then(function (r) {
-        if (r.status === 401) { TOKEN = null; session = null; render(); return; }
-        return r.json();
-      })
-      .then(function (s) { if (s && s.subject) { session = s; render(); } })
-      .catch(function () {});
+    syncPocketToken();
+    pocket.session.me().then(function (s) {
+      if (s && s.subject) { session = s; render(); }
+    }).catch(function (e) {
+      // 401 (expired/revoked) clears the session; other failures keep the UI
+      // usable but note the degraded state.
+      if (pocket.errorCode(e) === "AUTHENTICATION_REQUIRED") {
+        TOKEN = null; syncPocketToken(); session = null; render();
+      }
+    });
   }
 
   function login(username, password) {
-    postJSON("/api/login", { username: username, password: password }, function (s) {
+    pocket.session.login(username, password).then(function (s) {
       if (s && s.token) {
         TOKEN = s.token;
+        syncPocketToken();
         session = { subject: s.subject, permissions: s.permissions, expires_at: s.expires_at };
         refreshState(); render();
-      } else {
-        alert("login failed");
       }
+    }).catch(function () {
+      alert("login failed");
     });
   }
 
   function logout() {
     // Revoke the session server-side so the token cannot be reused.
     if (TOKEN) {
-      fetch("/api/logout", { method: "POST", headers: authHeaders() })
-        .catch(function () {}); // local logout proceeds regardless
+      pocket.session.logout().catch(function () {}); // local logout proceeds regardless
     }
-    TOKEN = null; session = null; refreshState(); render();
+    TOKEN = null; syncPocketToken(); session = null; refreshState(); render();
   }
 
   // ------------------------------------------------------------- refresh
   function refreshState() {
-    getJSON("/api/state", function (s) { state = s; render(); });
+    pocket.console.state().then(function (s) { state = s; render(); }).catch(function () {});
   }
-  function refreshScrub() { getJSON("/api/scrub", function (s) { scrub = s; render(); }); }
-  function refreshTwin() { getJSON("/api/twin", function (s) { twin = s; render(); }); }
-  function refreshShadow() { getJSON("/api/shadow", function (s) { shadow = s; render(); }); }
-  function refreshDecisions() { getJSON("/api/decisions", function (s) { decisions = s; render(); }); }
+  function refreshScrub() { pocket.console.scrub().then(function (s) { scrub = s; render(); }).catch(function () {}); }
+  function refreshTwin() { pocket.console.twin().then(function (s) { twin = s; render(); }).catch(function () {}); }
+  function refreshShadow() { pocket.console.shadow().then(function (s) { shadow = s; render(); }).catch(function () {}); }
+  function refreshDecisions() { pocket.console.decisions().then(function (s) { decisions = s; render(); }).catch(function () {}); }
 
   function refreshAll() {
     refreshState(); refreshScrub(); refreshTwin(); refreshShadow(); refreshDecisions();
@@ -108,7 +101,7 @@
   // ------------------------------------------------------------- live spine (SSE)
   function startStream() {
     if (typeof EventSource === "undefined") { streamStatus = "unsupported"; return; }
-    var es = new EventSource("/api/stream");
+    var es = new EventSource(pocket.console.streamUrl());
     streamStatus = "connecting";
     es.addEventListener("hello", function () { streamStatus = "live"; render(); });
     es.addEventListener("event", function (e) {
@@ -454,9 +447,10 @@
   // ------------------------------------------------------------- actions
   function decisionAction(action, decisionId) {
     if (!TOKEN) { alert("sign in required"); return; }
-    var url = "/api/decisions/" + encodeURIComponent(decisionId) + "/" + action;
-    postJSON(url, {}, function (s) {
-      if (s && s.error) { alert("denied: " + (s.error.message || s.error.code)); }
+    pocket.command(decisionId, action).then(function () {
+      refreshAll();
+    }).catch(function (e) {
+      alert("denied: " + (e && e.code ? e.code : "unknown"));
       refreshAll();
     });
   }
@@ -477,8 +471,10 @@
       var input = form.querySelector("[name='title']");
       var title = input ? input.value.trim() : "";
       if (!title) return;
-      postJSON("/api/decisions/propose", { title: title, send_to_council: true }, function (s) {
-        if (s && s.error) alert("denied: " + (s.error.message || ""));
+      pocket.propose(title, true).then(function () {
+        refreshAll();
+      }).catch(function (e) {
+        alert("denied: " + (e && e.code ? e.code : "unknown"));
         refreshAll();
       });
     }
@@ -489,8 +485,8 @@
     if (!el) return;
     var action = el.getAttribute("data-action");
     if (action === "logout") { logout(); return; }
-    if (action === "tamper") { postJSON("/api/demo/tamper", {}, function (s) { refreshAll(); }); return; }
-    if (action === "reset") { postJSON("/api/demo/reset", {}, function (s) { refreshAll(); }); return; }
+    if (action === "tamper") { pocket.demo.tamper().then(function () { refreshAll(); }).catch(function () {}); return; }
+    if (action === "reset") { pocket.demo.reset().then(function () { refreshAll(); }).catch(function () {}); return; }
     if (action === "council-approve" || action === "ratify" || action === "reject" || action === "execute") {
       decisionAction(action, el.getAttribute("data-did"));
       return;
@@ -507,13 +503,12 @@
     }
     var seq = el.getAttribute("data-seq");
     if (seq && el.getAttribute("data-testid") === "scrubber-tick") {
-      // Scrub to the chosen sequence via the read endpoint. If the chain is
-      // compromised the server refuses and returns the scrub error, which the
-      // timeline renders instead of any partial reconstruction.
-      fetch("/api/scrub?end=" + encodeURIComponent(seq))
-        .then(function (r) { return r.json(); })
-        .then(function (s) { scrub = s; render(); })
-        .catch(function () {});
+      // Scrub to the chosen sequence via the pocket client. If the chain is
+      // compromised the server refuses and returns a normalized REPLAY_REJECTED
+      // error, which the timeline renders instead of any partial reconstruction.
+      pocket.console.scrub(seq).then(function (s) {
+        scrub = s; render();
+      }).catch(function () {});
       return;
     }
   });

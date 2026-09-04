@@ -30,6 +30,7 @@ import time
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -448,6 +449,48 @@ class ExecuteBody(BaseModel):
 app = FastAPI(title="PocketOS Web Demo")
 
 
+# Normalized error model: every HTTP error carries a stable machine-readable
+# code and (where available) a request_id. Clients never parse human strings.
+_ERROR_BY_STATUS = {
+    400: "VALIDATION_FAILED",
+    401: "AUTHENTICATION_REQUIRED",
+    403: "AUTHORIZATION_DENIED",
+    404: "NOT_FOUND",
+    409: "CONFLICT",
+    422: "VALIDATION_FAILED",
+    429: "RATE_LIMITED",
+}
+
+
+@app.exception_handler(HTTPException)
+def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    rid = request.headers.get("x-request-id") or secrets.token_hex(8)
+    detail = exc.detail
+    code = None
+    if isinstance(detail, dict):
+        code = detail.get("code")
+    if code is None:
+        code = _ERROR_BY_STATUS.get(exc.status_code, "INTERNAL_ERROR")
+    body = {"error": {"code": code, "message": str(detail) if not isinstance(detail, dict) else detail, "request_id": rid}}
+    headers = dict(exc.headers or {})
+    headers["x-request-id"] = rid
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+def _validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    rid = request.headers.get("x-request-id") or secrets.token_hex(8)
+    body = {
+        "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "request validation failed",
+            "request_id": rid,
+            "details": exc.errors(),
+        }
+    }
+    return JSONResponse(status_code=422, content=body, headers={"x-request-id": rid})
+
+
 @app.get("/api/health")
 def api_health() -> dict[str, Any]:
     v = _verification_view()
@@ -732,6 +775,236 @@ def api_seed_legacy(body: SeedLegacyBody, request: Request) -> dict[str, Any]:
 
 
 # ---- static ----------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Versioned client API (/api/v1)
+#
+# A stable, domain-oriented, platform-neutral contract that the web UI and the
+# future iPhone client both consume. Only this layer knows the wire paths; the
+# pocket client in the frontend exposes domain methods over these routes.
+# Response shapes are normalized (schema_version + request_id + stable ids) so
+# clients never parse human strings. Authoritative mutation is unchanged: every
+# command still flows through the governance/constitutional path — these routes
+# never grant a client authority it lacks.
+# ---------------------------------------------------------------------------
+API_VERSION = "1"
+_CONTEXT: dict[str, Any] = {"request_id": None}
+
+
+def _rid() -> str:
+    return secrets.token_hex(8)
+
+
+def _verification_view_v1() -> dict[str, Any]:
+    v = _verification_view()
+    return {
+        "integrity": v["integrity"],
+        "valid": v["valid"],
+        "broken_seq": v["broken_seq"],
+    }
+
+
+def _ctx_v1(request: Request, v: dict[str, Any]) -> dict[str, Any]:
+    rid = _rid()
+    return {
+        "request_id": rid,
+        "api_version": API_VERSION,
+        "schema_version": "v2",
+        **v,
+    }
+
+
+@app.get("/api/v1/status")
+def v1_status(request: Request) -> dict[str, Any]:
+    return _ctx_v1(request, {
+        "status": "healthy",
+        "ledger": _verification_view_v1(),
+        "records": len(STATE),
+        "revision": STATE.revision(),
+        "server_time": int(time.time()),
+    })
+
+
+@app.get("/api/v1/memory")
+def v1_memory(request: Request) -> dict[str, Any]:
+    _sync_decision_state()
+    recs = STATE.records()
+    memories = [r for r in recs if (r.get("event") or "").startswith("memory.")]
+    items = [{
+        "id": str(r["sequence"]),
+        "sequence": r["sequence"],
+        "event": r.get("event"),
+        "kind": r.get("kind"),
+        "payload": r.get("payload", {}),
+        "hash": r.get("hash"),
+        "provenance": "ledger#" + str(r["sequence"]),
+    } for r in memories]
+    return _ctx_v1(request, {"items": items, "count": len(items)})
+
+
+@app.get("/api/v1/memory/{sequence}")
+def v1_memory_get(sequence: int, request: Request) -> dict[str, Any]:
+    for r in STATE.records():
+        if r["sequence"] == sequence:
+            return _ctx_v1(request, {"item": {
+                "id": str(r["sequence"]), "sequence": r["sequence"],
+                "event": r.get("event"), "kind": r.get("kind"),
+                "payload": r.get("payload", {}), "hash": r.get("hash"),
+                "provenance": "ledger#" + str(r["sequence"]),
+            }})
+    raise HTTPException(status_code=404, detail={"code": "NOT_FOUND"})
+
+
+@app.get("/api/v1/cognitive-twin")
+def v1_cognitive_twin(request: Request) -> dict[str, Any]:
+    cs = cognitive_state(STATE.records())
+    view = cs.view()
+    # Preserve epistemic status explicitly — never collapse to a boolean.
+    return _ctx_v1(request, {"cognitive_twin": view, "model_version": view.get("model_version", "twin-1.0")})
+
+
+@app.get("/api/v1/ai-shadow")
+def v1_ai_shadow(request: Request) -> dict[str, Any]:
+    return _ctx_v1(request, {"ai_shadow": shadow_state(STATE.records())})
+
+
+@app.get("/api/v1/decisions")
+def v1_decisions(request: Request) -> dict[str, Any]:
+    _sync_decision_state()
+    return _ctx_v1(request, {"items": [d.view() for d in _DECISION_REGISTRY.all()]})
+
+
+@app.get("/api/v1/decisions/{decision_id}")
+def v1_decisions_get(decision_id: str, request: Request) -> dict[str, Any]:
+    _sync_decision_state()
+    d = _DECISION_REGISTRY.get(decision_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "decision_id": decision_id})
+    return _ctx_v1(request, {"item": d.view()})
+
+
+@app.get("/api/v1/ledger")
+def v1_ledger(request: Request) -> dict[str, Any]:
+    return _ctx_v1(request, {
+        "ledger": _verification_view_v1(),
+        "genesis_sequence": 1,
+        "head_sequence": len(STATE),
+        "records": len(STATE),
+        "events": STATE.records(),
+    })
+
+
+@app.get("/api/v1/ledger/events/{sequence}")
+def v1_ledger_event(sequence: int, request: Request) -> dict[str, Any]:
+    for r in STATE.records():
+        if r["sequence"] == sequence:
+            return _ctx_v1(request, {"event": r})
+    raise HTTPException(status_code=404, detail={"code": "NOT_FOUND"})
+
+
+@app.get("/api/v1/replay/status")
+def v1_replay_status(request: Request) -> dict[str, Any]:
+    return _ctx_v1(request, {
+        "ledger": _verification_view_v1(),
+        "head_sequence": len(STATE),
+        "events": len(STATE),
+        "refuses_when_compromised": True,
+    })
+
+
+@app.get("/api/v1/replay/inspect")
+def v1_replay_inspect(end: Optional[int] = None, include_decisions: bool = False,
+                      request: Request = None) -> dict[str, Any]:
+    scrubber = Scrubber(STATE)
+    try:
+        result = scrubber.scrub(end_seq=end)
+    except ScrubberError as exc:
+        return _ctx_v1(request, {
+            "ok": False,
+            "error": {"code": "REPLAY_REJECTED", "message": str(exc), "broken_seq": exc.broken_seq},
+        })
+    out: dict[str, Any] = {
+        "ok": True,
+        "provenance": result.provenance_line(),
+        "start_seq": result.start_seq,
+        "end_seq": result.end_seq,
+        "event_count": result.event_count,
+        "state": result.state,
+    }
+    if include_decisions:
+        reg = DecisionRegistry()
+        reg.rebuild(list(result.events))
+        out["decisions"] = [d.view() for d in reg.all()]
+    return _ctx_v1(request, out)
+
+
+@app.get("/api/v1/evidence/verification")
+def v1_evidence_verification(request: Request) -> dict[str, Any]:
+    return _ctx_v1(request, {
+        "ledger": _verification_view_v1(),
+        "signature_status": "signed" if _verification_view()["valid"] else "invalid",
+        "evidence_integrity": "verified" if _verification_view()["valid"] else "compromised",
+    })
+
+
+@app.post("/api/v1/decisions/propose")
+def v1_decisions_propose(body: ProposalBody, request: Request) -> dict[str, Any]:
+    _sync_decision_state()
+    return _decisions_mutate("propose", body, request)
+
+
+@app.post("/api/v1/decisions/{decision_id}/ratify")
+def v1_decisions_ratify(decision_id: str, body: RatifyBody, request: Request) -> dict[str, Any]:
+    _sync_decision_state()
+    return _decisions_mutate("ratify", None, request, decision_id=decision_id)
+
+
+@app.post("/api/v1/decisions/{decision_id}/reject")
+def v1_decisions_reject(decision_id: str, body: RatifyBody, request: Request) -> dict[str, Any]:
+    _sync_decision_state()
+    return _decisions_mutate("reject", None, request, decision_id=decision_id)
+
+
+def _decisions_mutate(action: str, body: Optional[ProposalBody], request: Request,
+                      decision_id: Optional[str] = None) -> dict[str, Any]:
+    """Shared command gate for the v1 decision routes. A command is NOT
+    execution — it records a proposal or a human ratification/rejection event
+    through the canonical append path, exactly like the legacy routes. The
+    registry is then rebuilt from the ledger so the UI/iPhone reflect truth.
+    """
+    token = _bearer(request)
+    if action == "propose":
+        _require_permission(token, PERM_PROPOSE)
+        if not body or not (body.title or "").strip():
+            raise HTTPException(status_code=422, detail={"code": "VALIDATION_FAILED", "message": "title is required"})
+        title = body.title.strip()
+        did = (body.decision_id or "").strip() or f"D-{reasoning_hash(title).upper()}"
+        STATE.append("decision.proposed", "WebClient", {
+            "title": title, "decision_id": did, "risk": body.risk,
+            "reversible": body.reversible, "send_to_council": body.send_to_council,
+        })
+        _broadcast(STATE.records()[-1])
+        _sync_decision_state()
+        d = _DECISION_REGISTRY.get(did)
+        return _ctx_v1(request, {"ok": True, "decision": d.view() if d else None})
+    # ratify / reject
+    _require_permission(token, PERM_RATIFY)
+    if decision_id is None:
+        raise HTTPException(status_code=422, detail={"code": "VALIDATION_FAILED"})
+    _sync_decision_state()
+    d = _DECISION_REGISTRY.get(decision_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "decision_id": decision_id})
+    if action == "ratify":
+        if d.rejected:
+            raise HTTPException(status_code=409, detail={"code": "CONFLICT", "message": "decision was rejected"})
+        STATE.append("decision.ratified", "Human", {"decision_id": decision_id, "authority": "HUMAN"})
+    else:
+        STATE.append("decision.rejected", "Human", {"decision_id": decision_id, "authority": "HUMAN", "reason": "human rejected"})
+    _broadcast(STATE.records()[-1])
+    _sync_decision_state()
+    return _ctx_v1(request, {"ok": True, "decision": _DECISION_REGISTRY.get(decision_id).view()})
 
 
 @app.get("/")
