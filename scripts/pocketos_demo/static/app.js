@@ -100,24 +100,20 @@
 
   // ------------------------------------------------------------- live spine (SSE)
   function startStream() {
-    if (typeof EventSource === "undefined") { streamStatus = "unsupported"; return; }
-    var es = new EventSource(pocket.console.streamUrl());
-    streamStatus = "connecting";
-    es.addEventListener("hello", function () { streamStatus = "live"; render(); });
-    es.addEventListener("event", function (e) {
+    // The pocket client owns the EventSource lifecycle. The UI only subscribes
+    // to normalized observations and to stream-status changes; it never touches
+    // EventSource or the wire path directly.
+    pocket.events.onStatus(function (s) {
+      streamStatus = s;
+      render();
+    });
+    pocket.events.subscribe(function (event) {
       // A received event is observational — the UI refetches the authoritative
       // projection rather than trusting the push payload as its own action.
       streamStatus = "live";
       refreshAll();
     });
-    es.onerror = function () {
-      // Auto-reconnect: EventSource reconnects by itself. We refetch state so a
-      // missed event during the drop is reconciled.
-      streamStatus = "reconnecting";
-      render();
-      refreshAll();
-    };
-    window.__es = es;
+    pocket.events.connect();
   }
 
   // ------------------------------------------------------------- layout

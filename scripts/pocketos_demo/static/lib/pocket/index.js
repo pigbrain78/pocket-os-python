@@ -29,8 +29,51 @@
 
   var http = t.create(function () { return _token; });
 
+  // ---- live event spine (SSE) -----------------------------------------
+  // The pocket client owns the EventSource lifecycle. Subscribers register via
+  // pocket.events.subscribe(cb); the client forwards normalized observations
+  // and lets the subscriber reconcile with the authoritative server. Receiving
+  // an event never means this client caused it.
+  var _es = null;
+  var _statusListeners = [];
+  function status(s) { for (var i = 0; i < _statusListeners.length; i++) { try { _statusListeners[i](s); } catch (e) {} } }
+  function _safeParse(text) {
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+  function connect() {
+    if (typeof EventSource === "undefined") { status("unsupported"); return; }
+    if (_es) return;
+    status("connecting");
+    var es = new EventSource("/api/stream");
+    _es = es;
+    es.addEventListener("hello", function () { status("live"); });
+    es.addEventListener("event", function (e) {
+      var payload = _safeParse(e.data);
+      if (!payload) return;
+      emit({
+        type: payload.type || "event",
+        event_id: payload.event_id || "",
+        sequence: typeof payload.sequence === "number" ? payload.sequence : null,
+        occurred_at: payload.timestamp || null,
+        schema_version: payload.schema_version || "v2",
+        payload: payload.payload || {},
+      });
+      status("live");
+    });
+    es.onerror = function () {
+      // Auto-reconnect is EventSource's own; expose the state so the UI can
+      // reconcile any missed events by refetching authoritative projections.
+      status("reconnecting");
+    };
+  }
+  function disconnect() {
+    if (_es) { _es.close(); _es = null; }
+  }
+  function onStatus(cb) { _statusListeners.push(cb); }
+
   // Events: the UI registers one or more listeners; on a live SSE event the
-  // store refetches authoritative projections and notifies listeners.
+  // client forwards normalized observations and the subscriber reconciles by
+  // refetching authoritative projections.
   var _listeners = [];
   function subscribe(fn) { _listeners.push(fn); return function () { _listeners = _listeners.filter(function (x) { return x !== fn; }); }; }
   function emit(event) { for (var i = 0; i < _listeners.length; i++) { try { _listeners[i](event); } catch (e) {} } }
@@ -92,10 +135,12 @@
       getVerificationStatus: function () { return http.get("/evidence/verification"); },
     },
 
-    // events (subscription)
+    // events (subscription + live SSE spine ownership)
     events: {
       subscribe: subscribe,
-      emit: emit,
+      onStatus: onStatus,
+      connect: connect,
+      disconnect: disconnect,
     },
 
     // session (transport-level concerns exposed deliberately for login UI)
