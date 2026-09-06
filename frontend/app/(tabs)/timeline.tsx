@@ -7,6 +7,7 @@ import dayjs from "dayjs";
 import { useAuth, api } from "@/src/lib/auth";
 import { colors, spacing, radius, fs } from "@/src/theme";
 import TimeScrubber from "@/src/components/TimeScrubber";
+import BookmarkChips, { Bookmark } from "@/src/components/BookmarkChips";
 
 type Event = { id: string; kind: string; text: string; ref_id?: string; meta?: any; created_at: string };
 type Bounds = { earliest?: string | null; latest?: string | null; now?: string };
@@ -54,15 +55,22 @@ export default function TimelineScreen() {
   const [replay, setReplay] = useState<Replay | null>(null);
   const [replayLoading, setReplayLoading] = useState(false);
 
+  // Bookmarks
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [bookmarkSaving, setBookmarkSaving] = useState(false);
+  const [bookmarkError, setBookmarkError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     if (!token) return;
     try {
-      const [evs, bnds] = await Promise.all([
+      const [evs, bnds, bms] = await Promise.all([
         api<Event[]>("/api/timeline", { token }),
         api<Bounds>("/api/replay/bounds", { token }),
+        api<Bookmark[]>("/api/replay/bookmarks", { token }),
       ]);
       setEvents(evs);
       setBounds(bnds);
+      setBookmarks(bms);
       // Anchor at "latest" so first render is LIVE.
       if (bnds.latest) setAtMs(dayjs(bnds.latest).valueOf());
     } finally {
@@ -103,6 +111,53 @@ export default function TimelineScreen() {
     const ms = dayjs(bounds.latest).valueOf();
     setAtMs(ms);
     fetchReplay(null);
+  };
+
+  const jumpTo = (ms: number) => {
+    setAtMs(ms);
+    // If the target is essentially "now" (within 1s of the latest event),
+    // omit `at` on the fetch so the server uses full-precision now — otherwise
+    // millisecond truncation vs stored µs timestamps leaves 1 event orphaned
+    // in "still to come" and the LIVE pill never re-appears.
+    const latestMs = bounds.latest ? dayjs(bounds.latest).valueOf() : null;
+    if (latestMs != null && Math.abs(latestMs - ms) < 1000) {
+      fetchReplay(null);
+    } else {
+      fetchReplay(ms);
+    }
+  };
+
+  const saveBookmark = async (label: string, atIso: string) => {
+    if (!token) return;
+    setBookmarkError(null);
+    setBookmarkSaving(true);
+    try {
+      const created = await api<Bookmark>("/api/replay/bookmarks", {
+        token,
+        method: "POST",
+        body: JSON.stringify({ label, at: atIso }),
+      });
+      // Insert in descending order by `at` to match server ordering.
+      setBookmarks((prev) => [created, ...prev].sort((a, b) => (a.at < b.at ? 1 : -1)));
+    } catch (e: any) {
+      setBookmarkError(e?.message || "Save failed");
+      throw e;
+    } finally {
+      setBookmarkSaving(false);
+    }
+  };
+
+  const deleteBookmark = async (id: string) => {
+    if (!token) return;
+    try {
+      await api(`/api/replay/bookmarks/${encodeURIComponent(id)}`, {
+        token,
+        method: "DELETE",
+      });
+      setBookmarks((prev) => prev.filter((b) => b.id !== id));
+    } catch {
+      // silent
+    }
   };
 
   const isLive = replay ? replay.events_after === 0 : true;
@@ -166,6 +221,16 @@ export default function TimelineScreen() {
             onChange={setAtMs}
             onCommit={fetchReplay}
             onReturnToNow={returnToNow}
+          />
+          <BookmarkChips
+            bookmarks={bookmarks}
+            atMs={atMs}
+            isLive={isLive}
+            onSelect={(b) => jumpTo(dayjs(b.at).valueOf())}
+            onAdd={saveBookmark}
+            onDelete={deleteBookmark}
+            saveBusy={bookmarkSaving}
+            saveError={bookmarkError}
           />
           {!isLive ? (
             <Text style={styles.replayFoot} testID="replay-footer">

@@ -114,3 +114,15 @@ ledger head prefix, which makes the ledger's canonicity observable.
 - **Frontend**: New `<TimeScrubber>` component uses `PanResponder` with delta-from-grant math (`gestureState.dx`) so drags feel identical on mobile touch and web mouse; `measureInWindow`-based fallback for track-tap. Timeline tab now renders a "REALITY AS OF" card above the list with a 6-tile metric grid, the scrubber, and a footer showing `events_seen / events_after`. Events with `created_at > at` are dimmed to 30% opacity and tagged "· not yet" — the "future" is visible but visibly not-yet.
 - **LIVE detection**: `events_after === 0`. Initial load and Return-to-Now omit the `at` param to avoid millisecond-truncation excluding the last event.
 - **Tests**: `/app/backend/tests/test_replay.py` — 27 tests including client-side re-fold cross-check that recomputes all 14 counters from the raw 466-event ledger and asserts they match the server byte-for-byte at 5 different timestamps. Full frontend E2E via testing_agent (drag → assert counters shrink; return-to-now → assert counters restore).
+
+## Session +N — Snapshot Bookmarks (name-tag ledger moments)
+Users can name a moment in the ledger and jump back to it from a chip row.
+Bookmarks are metadata pointing INTO the ledger — they are NOT ledger events
+themselves. Deleting a bookmark cannot affect the fold (verified byte-identical).
+
+- **Backend**: New MongoDB collection `replay_bookmarks {id, user_id, label, at, created_at}`. `_MAX_BOOKMARK_LABEL=80`, `_MAX_BOOKMARKS_PER_USER=40`.
+  - `GET /api/replay/bookmarks` — list, sorted by `at` desc.
+  - `POST /api/replay/bookmarks {label, at}` — validates label (non-blank, ≤80), timestamp (`_parse_ts`), per-user cap. 400 on any violation.
+  - `DELETE /api/replay/bookmarks/{id}` — user-scoped, 404 if not owned/missing.
+- **Frontend**: New `<BookmarkChips>` component — horizontal ScrollView with a primary "Save · <current at>" chip (label adapts LIVE ↔ scrubbed) + one chip per saved bookmark. Save modal with 80-char live counter; long-press-to-delete (native `Alert.alert`, web `window.confirm`). Wired into Timeline tab below the TimeScrubber. Tapping a chip jumps the scrubber; within 1s of LIVE it uses the null-at path to guarantee events_after==0 (avoids µs-vs-ms slip).
+- **Tests**: `/app/backend/tests/test_bookmarks.py` — 27 tests (CRUD, validation, cap, user isolation, ledger-fold invariance across bookmark cycles). Frontend E2E via testing_agent verified full save/jump/delete flow with real 466-event demo data.

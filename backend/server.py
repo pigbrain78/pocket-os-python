@@ -2304,6 +2304,65 @@ async def replay(
         "recent_events": recent_up_to,
     }
 
+# ---------------- Replay Bookmarks ----------------
+# User-defined snapshots pointing INTO the ledger. Bookmarks are annotations,
+# not state-shaping events, so they are stored in their own collection and
+# NOT written to the immutable event ledger. Deleting a bookmark is safe —
+# nothing derived depends on it. The ledger itself is unaffected.
+
+class BookmarkIn(BaseModel):
+    label: str
+    at: str  # ISO timestamp
+
+_MAX_BOOKMARK_LABEL = 80
+_MAX_BOOKMARKS_PER_USER = 40
+
+@api.get("/replay/bookmarks")
+async def list_bookmarks(user=Depends(get_current_user)):
+    docs = (
+        await db.replay_bookmarks.find({"user_id": user["id"]}, {"_id": 0})
+        .sort("at", -1)
+        .to_list(_MAX_BOOKMARKS_PER_USER * 2)
+    )
+    return docs
+
+@api.post("/replay/bookmarks")
+async def create_bookmark(inp: BookmarkIn, user=Depends(get_current_user)):
+    label = (inp.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Label is required")
+    if len(label) > _MAX_BOOKMARK_LABEL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Label must be {_MAX_BOOKMARK_LABEL} characters or fewer",
+        )
+    ts = _parse_ts(inp.at)
+    if ts is None:
+        raise HTTPException(status_code=400, detail="Invalid timestamp")
+    count = await db.replay_bookmarks.count_documents({"user_id": user["id"]})
+    if count >= _MAX_BOOKMARKS_PER_USER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bookmark limit reached ({_MAX_BOOKMARKS_PER_USER}). Delete some first.",
+        )
+    doc = {
+        "id": uid(),
+        "user_id": user["id"],
+        "label": label,
+        "at": ts.isoformat(),
+        "created_at": now_iso(),
+    }
+    await db.replay_bookmarks.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/replay/bookmarks/{bid}")
+async def delete_bookmark(bid: str, user=Depends(get_current_user)):
+    res = await db.replay_bookmarks.delete_one({"id": bid, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Bookmark not found")
+    return {"ok": True}
+
 # ---------------- Graph ----------------
 @api.get("/graph")
 async def graph(user=Depends(get_current_user)):
