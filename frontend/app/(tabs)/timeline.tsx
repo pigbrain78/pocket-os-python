@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, ScrollView, StyleSheet, Pressable, RefreshControl, ActivityIndicator } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -6,8 +6,30 @@ import { Ionicons } from "@expo/vector-icons";
 import dayjs from "dayjs";
 import { useAuth, api } from "@/src/lib/auth";
 import { colors, spacing, radius, fs } from "@/src/theme";
+import TimeScrubber from "@/src/components/TimeScrubber";
 
 type Event = { id: string; kind: string; text: string; ref_id?: string; meta?: any; created_at: string };
+type Bounds = { earliest?: string | null; latest?: string | null; now?: string };
+type Replay = {
+  at: string;
+  now: string;
+  bounds: { earliest: string | null; latest: string | null };
+  state: {
+    notes_created: number;
+    notes_evolved: number;
+    concepts_extracted: number;
+    connections_made: number;
+    memory_strength: number;
+    council_runs: number;
+    debates_started: number;
+    syntheses_ratified: number;
+    decisions_made: number;
+    open_contradictions: number;
+    operations_run: number;
+  };
+  events_seen: number;
+  events_after: number;
+};
 
 const kindIcon: Record<string, [string, string]> = {
   note_created: ["document-text-outline", colors.onSurface],
@@ -26,22 +48,76 @@ export default function TimelineScreen() {
   const [refresh, setRefresh] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Replay state
+  const [bounds, setBounds] = useState<Bounds>({});
+  const [atMs, setAtMs] = useState<number>(Date.now());
+  const [replay, setReplay] = useState<Replay | null>(null);
+  const [replayLoading, setReplayLoading] = useState(false);
+
   const load = useCallback(async () => {
     if (!token) return;
     try {
-      const evs = await api<Event[]>("/api/timeline", { token });
+      const [evs, bnds] = await Promise.all([
+        api<Event[]>("/api/timeline", { token }),
+        api<Bounds>("/api/replay/bounds", { token }),
+      ]);
       setEvents(evs);
-    } finally { setLoading(false); }
+      setBounds(bnds);
+      // Anchor at "latest" so first render is LIVE.
+      if (bnds.latest) setAtMs(dayjs(bnds.latest).valueOf());
+    } finally {
+      setLoading(false);
+    }
   }, [token]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  const fetchReplay = useCallback(
+    async (ms: number | null) => {
+      if (!token) return;
+      setReplayLoading(true);
+      try {
+        // ms=null means "LIVE" — omit `at` so the server uses its own now with
+        // full precision, avoiding millisecond truncation vs stored timestamps.
+        const path = ms == null ? "/api/replay" : `/api/replay?at=${encodeURIComponent(new Date(ms).toISOString())}`;
+        const r = await api<Replay>(path, { token });
+        setReplay(r);
+      } catch {
+        // Silent — LIVE view remains valid.
+      } finally {
+        setReplayLoading(false);
+      }
+    },
+    [token]
+  );
+
+  // Fetch initial replay after bounds are known (shows the "LIVE" snapshot).
+  useEffect(() => {
+    if (bounds.latest) {
+      fetchReplay(null);
+    }
+  }, [bounds.latest, fetchReplay]);
+
+  const returnToNow = () => {
+    if (!bounds.latest) return;
+    const ms = dayjs(bounds.latest).valueOf();
+    setAtMs(ms);
+    fetchReplay(null);
+  };
+
+  const isLive = replay ? replay.events_after === 0 : true;
+
+  // Group events by day for the visual timeline, but let each event carry a
+  // "past/future" flag relative to atMs so we can dim events beyond the
+  // scrubber head without hiding them (users still see what's coming).
   const groups: Record<string, Event[]> = {};
   events.forEach(e => {
     const day = dayjs(e.created_at).format("YYYY-MM-DD");
     if (!groups[day]) groups[day] = [];
     groups[day].push(e);
   });
+
+  const s = replay?.state;
 
   return (
     <SafeAreaView style={styles.c} edges={["top"]} testID="timeline-screen">
@@ -55,6 +131,51 @@ export default function TimelineScreen() {
           <Text style={styles.ledgerBtnT}>Ledger</Text>
         </Pressable>
       </View>
+
+      {/* Replay card + scrubber. Only rendered when we actually have history. */}
+      {bounds.earliest && bounds.latest ? (
+        <View style={styles.replayCard} testID="replay-card">
+          <View style={styles.replayHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.replayLabel}>REALITY AS OF</Text>
+              <Text style={styles.replayTs} testID="replay-timestamp">
+                {isLive ? "Now" : dayjs(atMs).format("ddd, MMM D · HH:mm")}
+              </Text>
+            </View>
+            {replayLoading ? <ActivityIndicator size="small" color={colors.onSurface} /> : null}
+          </View>
+          {s ? (
+            <View style={styles.metricGrid}>
+              <Metric icon="document-text-outline" label="Notes" value={s.notes_created} testID="metric-notes" />
+              <Metric icon="pulse" label="Memory" value={`${s.memory_strength}%`} testID="metric-memory" />
+              <Metric icon="flag-outline" label="Decisions" value={s.decisions_made} testID="metric-decisions" />
+              <Metric icon="people-outline" label="Council" value={s.council_runs} testID="metric-council" />
+              <Metric icon="git-network-outline" label="Debates" value={s.debates_started} testID="metric-debates" />
+              <Metric
+                icon="warning-outline"
+                label="Contradictions"
+                value={s.open_contradictions}
+                warn={s.open_contradictions > 0}
+                testID="metric-contradictions"
+              />
+            </View>
+          ) : null}
+          <TimeScrubber
+            bounds={bounds}
+            atMs={atMs}
+            onChange={setAtMs}
+            onCommit={fetchReplay}
+            onReturnToNow={returnToNow}
+          />
+          {!isLive ? (
+            <Text style={styles.replayFoot} testID="replay-footer">
+              {replay?.events_seen ?? 0} events at or before this moment ·{" "}
+              {replay?.events_after ?? 0} still to come
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
       <ScrollView
         contentContainerStyle={styles.s}
         refreshControl={<RefreshControl refreshing={refresh} onRefresh={async () => { setRefresh(true); await load(); setRefresh(false); }} tintColor={colors.onSurface} />}
@@ -68,10 +189,12 @@ export default function TimelineScreen() {
             <Text style={styles.day}>{dayjs(day).isSame(dayjs(), "day") ? "Today" : dayjs(day).format("dddd, MMM D")}</Text>
             {evs.map((e, i) => {
               const [icon, color] = kindIcon[e.kind] || ["ellipse-outline", colors.muted];
+              const evMs = dayjs(e.created_at).valueOf();
+              const isFuture = !isLive && evMs > atMs;
               return (
                 <Pressable
                   key={e.id}
-                  style={styles.row}
+                  style={[styles.row, isFuture && styles.rowFuture]}
                   onPress={() => e.ref_id && e.kind !== "decision_made" ? router.push({ pathname: "/note/[id]", params: { id: e.ref_id } }) : undefined}
                   testID={`event-${e.kind}-${i}`}
                 >
@@ -86,6 +209,7 @@ export default function TimelineScreen() {
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                       <Ionicons name={icon as any} size={14} color={color} />
                       <Text style={styles.kind}>{e.kind.replace(/_/g, " ")}</Text>
+                      {isFuture ? <Text style={styles.futureTag}>· not yet</Text> : null}
                     </View>
                     <Text style={styles.text}>{e.text}</Text>
                     {e.meta?.after && e.meta?.before ? (
@@ -110,6 +234,18 @@ export default function TimelineScreen() {
   );
 }
 
+function Metric({
+  icon, label, value, warn, testID,
+}: { icon: string; label: string; value: number | string; warn?: boolean; testID?: string }) {
+  return (
+    <View style={styles.metric} testID={testID}>
+      <Ionicons name={icon as any} size={14} color={warn ? colors.error : colors.muted} />
+      <Text style={styles.metricLab}>{label}</Text>
+      <Text style={[styles.metricVal, warn && { color: colors.error }]}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   c: { flex: 1, backgroundColor: colors.surface },
   head: { flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.md, backgroundColor: colors.surface },
@@ -117,9 +253,37 @@ const styles = StyleSheet.create({
   ledgerBtnT: { color: "#fff", fontWeight: "800", fontSize: fs.sm },
   h1: { fontSize: fs["3xl"], fontWeight: "800", color: colors.onSurface },
   sub: { color: colors.muted, fontSize: fs.base, marginTop: 2 },
+
+  replayCard: {
+    marginHorizontal: spacing.xl,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    gap: spacing.sm,
+  },
+  replayHeader: { flexDirection: "row", alignItems: "center" },
+  replayLabel: { fontSize: fs.sm, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.6 },
+  replayTs: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  replayFoot: { fontSize: fs.sm, color: colors.muted, textAlign: "center", paddingTop: spacing.xs },
+
+  metricGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  metric: {
+    minWidth: 100,
+    flexGrow: 1,
+    flexBasis: "30%",
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  metricLab: { fontSize: fs.sm, color: colors.muted, marginTop: 2, textTransform: "uppercase", letterSpacing: 0.4 },
+  metricVal: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+
   s: { paddingHorizontal: spacing.xl, paddingBottom: 140 },
   day: { fontSize: fs.sm, color: colors.muted, marginBottom: spacing.md, textTransform: "uppercase", letterSpacing: 0.6 },
   row: { flexDirection: "row", gap: spacing.md },
+  rowFuture: { opacity: 0.3 },
   timeCol: { width: 60, alignItems: "center" },
   time: { fontSize: fs.sm, color: colors.muted, marginBottom: 4 },
   dotLine: { flex: 1, alignItems: "center" },
@@ -127,6 +291,7 @@ const styles = StyleSheet.create({
   line: { flex: 1, width: 1, backgroundColor: colors.border, marginTop: 4 },
   card: { flex: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md },
   kind: { fontSize: fs.sm, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
+  futureTag: { fontSize: fs.sm, color: colors.muted, fontStyle: "italic" },
   text: { fontSize: fs.base, color: colors.onSurface, marginTop: 4 },
   strength: { marginTop: 8, gap: 4 },
   bar: { height: 4, backgroundColor: colors.border, borderRadius: 2, overflow: "hidden" },

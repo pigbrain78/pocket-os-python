@@ -2148,6 +2148,162 @@ async def timeline(user=Depends(get_current_user)):
     events = await db.events.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(300)
     return events
 
+# ---------------- Replay Documentary Engine ----------------
+# Fold the append-only ledger up to any past timestamp to reconstruct the
+# derived state exactly as it was at that moment. State is NEVER read from
+# current DB collections — every field below comes from replaying events in
+# chronological order, so the answer is guaranteed to be a pure function of
+# the ledger head prefix. This is what makes "past" observable rather than
+# implied.
+
+def _empty_replay_state() -> Dict[str, Any]:
+    return {
+        "notes_created": 0,
+        "notes_evolved": 0,
+        "concepts_extracted": 0,
+        "connections_made": 0,
+        "memory_strength": 0,
+        "council_runs": 0,
+        "debates_started": 0,
+        "syntheses_proposed": 0,
+        "syntheses_ratified": 0,
+        "syntheses_rejected": 0,
+        "decisions_made": 0,
+        "operations_run": 0,
+        "open_contradictions": 0,
+        "resolved_contradictions": 0,
+    }
+
+def _fold_event(state: Dict[str, Any], ev: Dict[str, Any]) -> None:
+    """Apply a single ledger event to the accumulated state.
+    Pure function of (state, event); no I/O, no ordering assumption
+    beyond chronological iteration."""
+    kind = ev.get("kind")
+    meta = ev.get("meta") or {}
+    if kind == "note_created":
+        state["notes_created"] += 1
+    elif kind == "concepts_extracted":
+        state["concepts_extracted"] += len(meta.get("concepts") or [])
+    elif kind == "linked":
+        state["connections_made"] += 1
+    elif kind == "memory_strengthened":
+        # Memory strength is a POINT-IN-TIME measure — latest observation wins.
+        try:
+            state["memory_strength"] = int(meta.get("after") or state["memory_strength"])
+        except (TypeError, ValueError):
+            pass
+    elif kind in ("council_convened", "consensus_convened"):
+        state["council_runs"] += 1
+    elif kind == "debate_triggered":
+        state["debates_started"] += 1
+    elif kind == "synthesis_proposed":
+        state["syntheses_proposed"] += 1
+    elif kind == "synthesis_ratified":
+        state["syntheses_ratified"] += 1
+    elif kind == "synthesis_rejected":
+        state["syntheses_rejected"] += 1
+    elif kind == "decision_made":
+        state["decisions_made"] += 1
+    elif kind == "operation_run":
+        state["operations_run"] += 1
+    elif kind == "idea_evolved":
+        state["notes_evolved"] += 1
+    elif kind == "contradiction_detected":
+        state["open_contradictions"] += 1
+    elif kind == "contradiction_resolved":
+        # Only decrement if we actually had one open, so replayed state
+        # never goes negative under out-of-order writes.
+        state["open_contradictions"] = max(0, state["open_contradictions"] - 1)
+        state["resolved_contradictions"] += 1
+
+def _parse_ts(s: Any) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        # Accept both "Z" suffix and "+00:00"
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+@api.get("/replay/bounds")
+async def replay_bounds(user=Depends(get_current_user)):
+    """Return the timestamps of the first and last ledger events for this
+    user. The Timeline scrubber uses this to set its slider domain."""
+    first = await db.events.find_one(
+        {"user_id": user["id"]}, {"_id": 0, "created_at": 1}, sort=[("created_at", 1)]
+    )
+    last = await db.events.find_one(
+        {"user_id": user["id"]}, {"_id": 0, "created_at": 1}, sort=[("created_at", -1)]
+    )
+    return {
+        "earliest": first["created_at"] if first else None,
+        "latest": last["created_at"] if last else None,
+        "now": now_iso(),
+    }
+
+@api.get("/replay")
+async def replay(
+    at: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Reconstruct the derived state of the workspace as it was at `at` by
+    folding the append-only ledger from the earliest event up to `at`.
+
+    `at` is an ISO-8601 timestamp. If omitted, defaults to "now" (i.e. the
+    current head — this is the same state the app normally shows).
+
+    Response shape:
+        {
+          "at": <effective timestamp used>,
+          "now": <server now>,
+          "bounds": {"earliest": ..., "latest": ...},
+          "state": {<all derived counters at `at`>},
+          "events_seen": <int, total events with created_at <= at>,
+          "events_after": <int, remaining events after `at`>,
+          "recent_events": [<up to 20 most recent events at/before `at`>],
+        }
+    """
+    at_ts = _parse_ts(at) if at else None
+    server_now = datetime.now(timezone.utc)
+    if at_ts is None:
+        at_ts = server_now
+    # Cursor-forward, chronological order — the ONLY way to reconstruct
+    # correctly for a hash-chained ledger.
+    cursor = db.events.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", 1)
+    state = _empty_replay_state()
+    events_seen = 0
+    events_after = 0
+    earliest: Optional[str] = None
+    latest: Optional[str] = None
+    recent_up_to: List[Dict[str, Any]] = []  # keep the last 20 events at/before `at`
+    async for ev in cursor:
+        ts = _parse_ts(ev.get("created_at"))
+        if earliest is None:
+            earliest = ev.get("created_at")
+        latest = ev.get("created_at")
+        if ts is None:
+            # Skip malformed timestamps rather than crash the replay.
+            continue
+        if ts <= at_ts:
+            _fold_event(state, ev)
+            events_seen += 1
+            recent_up_to.append(ev)
+            if len(recent_up_to) > 20:
+                recent_up_to.pop(0)
+        else:
+            events_after += 1
+    # Return most-recent-first for the UI.
+    recent_up_to.reverse()
+    return {
+        "at": at_ts.isoformat(),
+        "now": server_now.isoformat(),
+        "bounds": {"earliest": earliest, "latest": latest},
+        "state": state,
+        "events_seen": events_seen,
+        "events_after": events_after,
+        "recent_events": recent_up_to,
+    }
+
 # ---------------- Graph ----------------
 @api.get("/graph")
 async def graph(user=Depends(get_current_user)):

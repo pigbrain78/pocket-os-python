@@ -102,3 +102,15 @@ Real, no-lockout password recovery so admin reset is no longer needed.
 - **Preview graceful degradation**: `EMERGENT_EMAIL_KEY` is intentionally empty in preview → `send_email` no-ops and logs a warning instead of raising. Real email starts flowing after the next deploy (platform auto-provisions the key).
 - **Frontend**: "Forgot password?" link added to `/auth/login` (testID `forgot-password-link`). New screens `/auth/forgot-password` (request code, enumeration-safe confirmation) and `/auth/reset-password` (email + 6-digit code + new password + confirm; on success auto-logs in via `useAuth().login` and routes to `/(tabs)/console`).
 - **Tests**: `/app/backend/tests/test_forgot_password.py` (24 tests, serial `-n 0`).
+
+## Session +N — Replay Documentary Engine (Timeline scrubber)
+Reality-as-of-any-moment folded from the append-only ledger. State is NEVER
+read from the current derived collections — it is a pure function of the
+ledger head prefix, which makes the ledger's canonicity observable.
+
+- **`GET /api/replay/bounds`** — returns `{earliest, latest, now}` (ISO-8601) so the client scrubber knows its slider domain.
+- **`GET /api/replay?at=<iso>`** — folds every event with `created_at <= at`, applying pure deltas to an empty state accumulator. Response: `{at, now, bounds, state, events_seen, events_after, recent_events[]}`. State has 14 counters: notes_created, notes_evolved, concepts_extracted, connections_made, memory_strength (latest observation wins), council_runs, debates_started, syntheses_proposed/ratified/rejected, decisions_made, operations_run, open_contradictions (min-clamped at 0), resolved_contradictions.
+- **`at` missing or malformed** → gracefully defaults to server `now` (never 400/500).
+- **Frontend**: New `<TimeScrubber>` component uses `PanResponder` with delta-from-grant math (`gestureState.dx`) so drags feel identical on mobile touch and web mouse; `measureInWindow`-based fallback for track-tap. Timeline tab now renders a "REALITY AS OF" card above the list with a 6-tile metric grid, the scrubber, and a footer showing `events_seen / events_after`. Events with `created_at > at` are dimmed to 30% opacity and tagged "· not yet" — the "future" is visible but visibly not-yet.
+- **LIVE detection**: `events_after === 0`. Initial load and Return-to-Now omit the `at` param to avoid millisecond-truncation excluding the last event.
+- **Tests**: `/app/backend/tests/test_replay.py` — 27 tests including client-side re-fold cross-check that recomputes all 14 counters from the raw 466-event ledger and asserts they match the server byte-for-byte at 5 different timestamps. Full frontend E2E via testing_agent (drag → assert counters shrink; return-to-now → assert counters restore).
