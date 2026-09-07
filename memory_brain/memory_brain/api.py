@@ -110,6 +110,12 @@ class MemoryAPI:
         item = self.brain.review.decide(item_id, decision, decided_by)
         return {"item_id": item.item_id, "status": item.status}
 
+    def ratify_council(self, item_id: str, signatures: dict) -> dict:
+        """Authorize a council-required irreversible mutation via verified
+        council quorum. Passes through to the brain's ratify_council; a bare
+        human review decision never reaches here (it is not authority)."""
+        return self.brain.ratify_council(item_id, signatures)
+
     def health(self) -> dict:
         return self.brain.health.snapshot()
 
@@ -117,34 +123,46 @@ class MemoryAPI:
         return self.brain.verify.verify_chain()
 
 
+from pydantic import BaseModel  # noqa: E402 - optional dep, guarded below
+
+
+class RememberBody(BaseModel):
+    content: str
+    memory_type: Optional[str] = None
+    source_id: Optional[str] = None
+    actor: Optional[str] = None
+    is_llm: bool = False
+    sensitive: bool = False
+    supersedes: Optional[str] = None
+
+
+class SearchBody(BaseModel):
+    query: str
+    top_k: int = 10
+    memory_types: Optional[list[str]] = None
+    minimum_confidence: float = 0.0
+
+
+class ReviewBody(BaseModel):
+    decision: str
+    decided_by: str
+
+
+class RatifyBody(BaseModel):
+    signatures: dict[str, str] = {}
+
+
 def build_fastapi(brain: Optional[MemoryBrain] = None):
     """Construct a FastAPI app exposing the typed endpoints (if fastapi is
-    importable). Kept separate so the core never depends on the web layer."""
+    importable). Kept separate so the core never depends on the web layer.
+
+    The request body models are defined at MODULE scope (not nested in this
+    function) so pydantic can resolve their ForwardRefs on import.
+    """
     from fastapi import FastAPI, HTTPException
-    from pydantic import BaseModel
 
     api = MemoryAPI(brain=brain)
-
     app = FastAPI(title="Memory Second Brain", version="1.0.0")
-
-    class RememberBody(BaseModel):
-        content: str
-        memory_type: Optional[str] = None
-        source_id: Optional[str] = None
-        actor: Optional[str] = None
-        is_llm: bool = False
-        sensitive: bool = False
-        supersedes: Optional[str] = None
-
-    class SearchBody(BaseModel):
-        query: str
-        top_k: int = 10
-        memory_types: Optional[list[str]] = None
-        minimum_confidence: float = 0.0
-
-    class ReviewBody(BaseModel):
-        decision: str
-        decided_by: str
 
     @app.post("/memory/remember")
     def _remember(body: RememberBody):
@@ -173,6 +191,14 @@ def build_fastapi(brain: Optional[MemoryBrain] = None):
     @app.post("/memory/review/{item_id}/decide")
     def _decide(item_id: str, body: ReviewBody):
         return api.review_decide(item_id, body.decision, body.decided_by)
+
+    @app.post("/memory/review/{item_id}/ratify")
+    def _ratify(item_id: str, body: RatifyBody):
+        """Authoritative memory ratification: verify a council quorum of
+        signatures over the item's bound (memory_id, operation) candidate, then
+        apply the irreversible mutation. Bearer permission alone is NOT
+        authority \u2014 only verified consensus mutates historical truth."""
+        return api.ratify_council(item_id, body.signatures)
 
     @app.get("/memory/contradictions")
     def _contradictions():

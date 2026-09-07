@@ -257,3 +257,54 @@ def test_full_council_chain(gated):
     # The ratification event is present as evidence.
     types = [e.event_type for e in gated.ledger.events()]
     assert "MEMORY_COUNCIL_RATIFIED" in types
+
+
+# ---------------------------------------------------------------------------
+# HTTP ratification route (/memory/review/{item_id}/ratify)
+# ---------------------------------------------------------------------------
+
+
+def _http_client():
+    """A council-gated brain wrapped in its FastAPI surface (TestClient)."""
+    from fastapi.testclient import TestClient
+    from memory_brain.api import build_fastapi
+    brain = MemoryBrain(":memory:", require_council_for_irreversible=True)
+    return TestClient(build_fastapi(brain=brain)), brain
+
+
+def test_http_route_ratifies_with_quorum():
+    client, brain = _http_client()
+    mid = brain.remember("http retract fact", memory_type="FACT")["memory_id"]
+    ret = brain.retract(mid, "no longer true", "agent")
+    item_id = ret["item_id"]
+    # Off-box member signatures (as scripts/sign_memory_op.py would emit).
+    sigs = {"council-a": mbc.sign_for_member("council-a", mid, "retract"),
+            "council-b": mbc.sign_for_member("council-b", mid, "retract")}
+    r = client.post(f"/memory/review/{item_id}/ratify", json={"signatures": sigs})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ratified"] is True
+    assert body["operation"] == "retract"
+    assert brain.get(mid)["status"] == "RETRACTED"
+
+
+def test_http_route_below_quorum_fails_closed():
+    client, brain = _http_client()
+    mid = brain.remember("http block fact", memory_type="FACT")["memory_id"]
+    ret = brain.retract(mid, "no longer true", "agent")
+    item_id = ret["item_id"]
+    siga = mbc.sign_for_member("council-a", mid, "retract")
+    r = client.post(f"/memory/review/{item_id}/ratify",
+                    json={"signatures": {"council-a": siga}})
+    assert r.status_code == 200
+    assert r.json()["ratified"] is False
+    assert brain.get(mid)["status"] == "ACTIVE"
+
+
+def test_http_body_routes_are_live():
+    """Regression: the pydantic request-body models resolve (they are module
+    scoped), so /memory/remember accepts a JSON body (not 422)."""
+    client, brain = _http_client()
+    r = client.post("/memory/remember", json={"content": "body fact",
+                                              "memory_type": "FACT"})
+    assert r.status_code == 200, r.text
