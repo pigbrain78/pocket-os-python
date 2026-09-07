@@ -1,8 +1,8 @@
 {
   "format": "pocketos-build-manifest",
   "version": "1.0.0",
-  "commit": "c79f866bce5d312036f189dcb56cd77eb96a0214",
-  "generated": "2026-09-07T17:27:46Z",
+  "commit": "95901fedbeec50bcd6cc2365f009c9202f68781c",
+  "generated": "2026-09-07T17:33:21Z",
   "note": "pins committed source tree; excludes BUILD_MANIFEST.json (self), demo_state.json (runtime ledger), session plan.md",
   "files": {
     "CHECKPOINT_MANIFEST.md": "00dcd5e4d4615f86750f3d733da34987f0a0b17a51384ff4c076fd9cf4c2ca2f",
@@ -28,6 +28,7 @@
     "ios/Tests/PocketOSKitTests/Fixtures/state.json": "4c345b7ce0edcb0c0e46e8acad039806a9f3c0f7c78e2c4d247d3a65f4d15550",
     "ios/Tests/PocketOSKitTests/Fixtures/twin.json": "21148c9c85e910d698859acc9fa6f08086fd4d368d33868833572c31a05a372a",
     "ios/Tests/PocketOSKitTests/ProjectionDecodeTests.swift": "b5ed6f80432a613787d3d47ee16df39b65172f54511521cf9199bedd66f1fa76",
+    "scripts/council_signer.py": "b5a99c34b6341b9f3959d0e8ca038a68f6fe1b6dc89627418a1f9efb136c59b5",
     "scripts/pocketos_demo/app.py": "395ecf7f07dc10b248adfaed8977dfd954cf7d0df082eacac0cadbec64fcbe9d",
     "scripts/pocketos_demo/engines/__init__.py": "690a4879ad6c1f3067643b734936abfea07c8e563a67bb7df4ab5c571469e8f7",
     "scripts/pocketos_demo/engines/cognitive.py": "5cdcd5989da13e82b9dc1b0ab84794dd790f8473175d9a82bc66fb26d1082e75",
@@ -45,7 +46,7 @@
     "scripts/pocketos_demo/static/styles.css": "347eb9828d79fb2e30df377fae68dd186ee965b165a4f9de0e2d77e604f8238c",
     "tests_pocketos/rehearsal_test.py": "5ed60f184f40c4f2e8c5533e1b6a7419485cc23f5fe5ea577f77a7d726cfcd80",
     "tests_pocketos/test_build_manifest.py": "fe7fb96121b204ca1773800f40b8c83dde109fca5d9d966947f62066ade9c55c",
-    "tests_pocketos/test_council_ratification_contract.py": "8c0693726b88198a16cd457fd517113442ffcdc84162242a4d0ff72eaf66688c",
+    "tests_pocketos/test_council_ratification_contract.py": "8044b372a6ac3b877c56020f28d8129b9fa97aa6a469579eafee4f0e74a23d19",
     "tests_pocketos/test_pocketos_auth.py": "e7f725ac0e95939bbb95ce2fde22bb2c52a6de56fa01520af9ba6d108d58c326",
     "tests_pocketos/test_pocketos_controlroom.py": "1178f6d9908db16092a8f90d4c950a187afa1c580ef9638f40ac47d89aa3bd79",
     "tests_pocketos/test_pocketos_engines.py": "b2eced999af1056fcb9481d5c947a80266537284900619fc4b48ce19eacee983",
