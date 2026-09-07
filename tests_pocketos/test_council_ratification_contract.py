@@ -38,6 +38,7 @@ import pytest
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from pocketos_demo.engines import council_ratification as council
 from pocketos_demo.engines import council_gate
@@ -392,3 +393,56 @@ def test_17_demo_mode_enables_onbox_signing_only_for_harness():
     # Restore production default for the rest of the process.
     os.environ.pop("POCKETOS_COUNCIL_DEMO_SIGNING", None)
     _reload_gate()
+
+
+# ---------------------------------------------------------------------------
+# Off-box signer utility (scripts/council_signer.py)
+# ---------------------------------------------------------------------------
+
+
+def _run_signer(*args):
+    """Run the standalone off-box signer CLI and return its stdout JSON."""
+    import subprocess
+    out = subprocess.check_output(
+        ["python3", os.path.join(ROOT_DIR, "scripts", "council_signer.py"), *args],
+        stderr=subprocess.DEVNULL)
+    return json.loads(out)
+
+
+def test_18_offbox_signer_matches_contract_signature(tmp_path):
+    """A signature produced by the standalone off-box signer must byte-match
+    the authoritative council contract (same canonical payload + key)."""
+    import subprocess
+    keyfile = tmp_path / "member.key"
+    keyfile.write_text("aa" * 32)  # 64 hex chars
+    out = _run_signer("--candidate", "D-SIGN-1", "--state", "RATIFIED",
+                      "--member", "council-a", "--key-file", str(keyfile))
+    assert out["mode"] == "sign"
+    assert out["signature"] == council.sign("D-SIGN-1", "RATIFIED", "council-a",
+                                            bytes.fromhex("aa" * 32))
+
+
+def test_19_offbox_signer_quorum_accepted(tmp_path):
+    """Two members signing off-box must form a quorum the contract accepts."""
+    a = tmp_path / "a.key"; a.write_text("aa" * 32)
+    b = tmp_path / "b.key"; b.write_text("bb" * 32)
+    sa = _run_signer("--candidate", "D-SIGN-2", "--state", "RATIFIED",
+                     "--member", "council-a", "--key-file", str(a))["signature"]
+    sb = _run_signer("--candidate", "D-SIGN-2", "--state", "RATIFIED",
+                     "--member", "council-b", "--key-file", str(b))["signature"]
+    reg = council.new_registry({"council-a": bytes.fromhex("aa" * 32),
+                                "council-b": bytes.fromhex("bb" * 32)})
+    assert council.verify_ratification("D-SIGN-2", "RATIFIED",
+                                       {"council-a": sa, "council-b": sb}, reg)
+
+
+def test_20_offbox_signer_show_payload_requires_no_key():
+    """--show-payload prints the exact canonical JSON without any key."""
+    import subprocess
+    out = subprocess.check_output(
+        ["python3", os.path.join(ROOT_DIR, "scripts", "council_signer.py"),
+         "--candidate", "D-SIGN-3", "--state", "RATIFIED",
+         "--member", "council-a", "--show-payload"])
+    payload = out.decode().strip().splitlines()[0]
+    assert json.loads(payload) == {"candidate_id": "D-SIGN-3",
+                                   "ratifier": "council-a", "state": "RATIFIED"}
