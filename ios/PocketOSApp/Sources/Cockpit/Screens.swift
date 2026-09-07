@@ -253,6 +253,8 @@ public struct DecisionsView: View {
                 Text(d.title).font(.system(size: 15, weight: .semibold)).foregroundColor(PocketTheme.ink)
                 Text("risk \(d.risk ?? "-") · reversible \(d.reversible == true ? "yes" : "no") · reasoning \(d.reasonHash ?? "-")")
                     .font(.system(size: 10, design: .monospaced)).foregroundColor(PocketTheme.muted)
+                authorityComponents(d)
+                verdict(for: d)
                 if let stage = d.stage {
                     Text("stage \(stage)").font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundColor(PocketTheme.accent)
@@ -272,6 +274,50 @@ public struct DecisionsView: View {
         case .rejected: return PocketTheme.bad
         case .pending, .council, .awaitingRatification: return PocketTheme.warn
         case nil: return PocketTheme.muted
+        }
+    }
+
+    /// Independent authority-state components. Each comes from the backend;
+    /// the UI never derives executable-ness from permission alone.
+    private func authorityComponents(_ d: PocketDecision) -> some View {
+        let ratified = d.humanRatified
+        let executable = d.canExecute
+        let executed = d.executedSeq != nil
+        let sessionPerm = vm.session?.hasPermission(Permission.execute.rawValue) ?? false
+        return VStack(alignment: .leading, spacing: 3) {
+            component("User EXECUTE permission", ok: sessionPerm, detail: sessionPerm ? "client capability only" : "server re-validates")
+            component("Human ratified", ok: ratified)
+            component("Capability valid", ok: executable && ratified, detail: "backend can_execute")
+            component("Execution started", ok: executed, detail: executed ? "ledger #\(d.executedSeq ?? 0)" : nil)
+            component("Evidence recorded", ok: executed, detail: executed ? (d.evidenceStage ?? "EVIDENCE") : nil)
+        }
+    }
+
+    private func component(_ label: String, ok: Bool, detail: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text(label).font(.system(size: 10)).foregroundColor(PocketTheme.muted)
+            StatusPill(ok ? "YES" : "NO", color: ok ? PocketTheme.good : PocketTheme.warn)
+            if let detail {
+                Text(detail).font(.system(size: 9)).italic().foregroundColor(PocketTheme.muted)
+            }
+        }
+    }
+
+    /// Blocked/available verdict, shown only when the backend reports it.
+    @ViewBuilder
+    private func verdict(for d: PocketDecision) -> some View {
+        if d.rejected {
+            Text("REJECTED — execution blocked")
+                .font(.system(size: 11, weight: .semibold)).foregroundColor(PocketTheme.bad)
+        } else if !d.humanRatified && d.executedSeq == nil {
+            Text("NOT HUMAN-RATIFIED — execution blocked")
+                .font(.system(size: 11, weight: .semibold)).foregroundColor(PocketTheme.warn)
+        } else if d.executedSeq != nil {
+            Text("EXECUTED — evidence recorded").font(.system(size: 11, weight: .semibold))
+                .foregroundColor(PocketTheme.good)
+        } else if d.canExecute {
+            Text("Execution available (backend-confirmed)")
+                .font(.system(size: 11, weight: .semibold)).foregroundColor(PocketTheme.good)
         }
     }
 }

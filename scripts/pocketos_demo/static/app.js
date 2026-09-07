@@ -388,9 +388,54 @@
 
   // ------------------------------------------------------------- decisions
   function decisionCard(d) {
-    var stage = esc(d.stage || "");
     var status = esc(d.status || "");
-    var stcls = /RATIFIED|EXECUTED/.test(status) ? "st-good" : (/REJECTED/.test(status) ? "st-bad" : "st-warn");
+    // Independent authority-state components. Each comes from the backend;
+    // the UI never derives executable-ness from permission alone.
+    var ratified = d.human_ratified === true;
+    var rejected = d.rejected === true;
+    var executed = !!d.executed_seq;
+    var executable = d.can_execute === true;   // authoritative: backend RATIFIED
+
+    // Derived display stage for the human, mapped from canonical backend fields.
+    var term;
+    if (rejected) term = ["REJECTED", "EXECUTION BLOCKED"];
+    else if (executed) term = ["EXECUTED", "EVIDENCE RECORDED"];
+    else if (!ratified && !executed) term = ["NOT HUMAN-RATIFIED", "EXECUTION BLOCKED"];
+    else if (ratified && executable) term = ["HUMAN RATIFIED", "EXECUTABLE"];
+    else term = [status, ""];
+
+    function stateBlock(label, ok, detail) {
+      return '<div class="auth-state">' +
+        '<span class="auth-label">' + esc(label) + "</span>" +
+        '<span class="pill ' + (ok ? "st-good" : "st-warn") + '">' + esc(ok ? "YES" : "NO") + "</span>" +
+        (detail ? '<span class="auth-detail">' + detail + "</span>" : "") + "</div>";
+    }
+
+    // User permission is presented as the client's capability only — it is
+    // never shown as execution authority (the server re-validates).
+    var myPerm = loggedIn() && hasPerm("EXECUTE");
+    var components =
+      stateBlock("User has EXECUTE permission", myPerm, myPerm ? "client capability only" : "sign in with execute perm") +
+      stateBlock("Governance approved", d.council_approved === true, "") +
+      stateBlock("Human ratified", ratified, "") +
+      stateBlock("Capability valid", executable && ratified, "backend: can_execute") +
+      stateBlock("Execution started", executed, executed ? "ledger seq #" + d.executed_seq : "") +
+      stateBlock("Evidence recorded", executed, executed ? d.evidence_stage || "EVIDENCE" : "no execution evidence");
+
+    var verdict = "";
+    if (rejected) {
+      verdict = '<div class="auth-verdict st-bad" data-testid="exec-blocked">REJECTED — execution blocked</div>';
+    } else if (!ratified) {
+      verdict = '<div class="auth-verdict st-warn" data-testid="exec-blocked">NOT HUMAN-RATIFIED — execution blocked</div>';
+    } else if (executed) {
+      verdict = '<div class="auth-verdict st-good" data-testid="exec-state">EXECUTED — evidence recorded</div>';
+    } else if (executable) {
+      // Show "Execution available" ONLY because the backend reports it.
+      verdict = '<div class="auth-verdict st-good" data-testid="exec-available">Execution available (backend-confirmed)</div>';
+    }
+
+    // Mutation controls. Execute appears ONLY when the backend reports
+    // can_execute AND the session carries EXECUTE; the server re-validates.
     var controls = "";
     if (loggedIn() && hasPerm("COUNCIL") && (d.status === "PENDING" || d.status === "COUNCIL")) {
       controls += '<button class="btn" data-action="council-approve" data-did="' + esc(d.decision_id) + '">Approve (council)</button>';
@@ -399,20 +444,23 @@
       controls += '<button class="btn btn-primary" data-action="ratify" data-did="' + esc(d.decision_id) + '">Ratify (human)</button>' +
         '<button class="btn btn-danger" data-action="reject" data-did="' + esc(d.decision_id) + '">Reject</button>';
     }
-    if (loggedIn() && hasPerm("EXECUTE") && d.status === "RATIFIED") {
+    if (loggedIn() && hasPerm("EXECUTE") && executable && !executed) {
       controls += '<button class="btn btn-primary" data-action="execute" data-did="' + esc(d.decision_id) + '">Execute</button>';
     }
     var lifecycle = d.lifecycle.map(function (st) {
-      var on = st === stage;
+      var on = st === (d.stage || "");
       return '<span class="lc' + (on ? " lc-on" : "") + '">' + esc(st) + "</span>";
     }).join('<span class="lc-arrow">&rsaquo;</span>');
-    return '<li class="decision-card" data-testid="decision-card" data-did="' + esc(d.decision_id) + '">' +
+
+    return '<li class="decision-card" data-testid="decision-card" data-did="' + esc(d.decision_id) + '" data-can-execute="' + (executable ? "true" : "false") + '">' +
       '<div class="dec-head"><span class="tag">' + esc(d.decision_id) + "</span>" +
-      '<span class="pill ' + stcls + '" data-testid="decision-status">' + status + "</span>" +
-      '<span class="pill ' + (d.human_ratified ? "st-good" : "st-warn") + '" data-testid="decision-ratified">' + (d.human_ratified ? "RATIFIED" : "NOT RATIFIED") + "</span></div>" +
+      '<span class="pill ' + (rejected ? "st-bad" : (executable ? "st-good" : "st-warn")) + '" data-testid="decision-status">' + status + "</span>" +
+      '<span class="pill ' + (ratified ? "st-good" : "st-warn") + '" data-testid="decision-ratified">' + (ratified ? "RATIFIED" : "NOT RATIFIED") + "</span></div>" +
       '<h3>' + esc(d.title) + "</h3>" +
       '<div class="dec-meta">risk ' + esc(d.risk) + " &middot; reversible " + (d.reversible ? "yes" : "no") +
       " &middot; reasoning " + esc(d.reason_hash) + " &middot; proposal #" + (d.proposal_seq || "-") + "</div>" +
+      '<div class="auth-components" data-testid="auth-components">' + components + "</div>" +
+      verdict +
       '<div class="lifecycle" data-testid="lifecycle">' + lifecycle + "</div>" +
       (controls ? '<div class="dec-actions">' + controls + "</div>" : "") +
       "</li>";
