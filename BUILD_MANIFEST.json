@@ -1,8 +1,8 @@
 {
   "format": "pocketos-build-manifest",
   "version": "1.0.0",
-  "commit": "b10397ecd0781f3dcd7fa5b18247c3eee640365b",
-  "generated": "2026-09-07T17:54:28Z",
+  "commit": "07cfbdd995f3dc205f86cc6d8598a7369ce8c9e9",
+  "generated": "2026-09-07T17:59:38Z",
   "note": "pins committed source tree; excludes self, demo_state.json (runtime), session plan.md",
   "files": {
     "CHECKPOINT_MANIFEST.md": "00dcd5e4d4615f86750f3d733da34987f0a0b17a51384ff4c076fd9cf4c2ca2f",
@@ -65,6 +65,7 @@
     "memory_brain/tests/test_ledger.py": "7cb7258d8cfacb8d4e241b734b144ba9fb913799d925ea2a5a9838e52ec261d2",
     "memory_brain/tests/test_retrieval_context.py": "51cf926fa3b91f9fdfaf9f1470acd43e152127d01922fc02f86affb98333f437",
     "memory_brain/tests/test_verify_quality_api.py": "2873a7586e58b98173e267bfdbb7c45fae0fd6448e96b0c21fa1ee9393022d92",
+    "requirements.txt": "af7cb27fd01643664715dd42e8f52ac3d0fe9711a1bd0cfeef5998e81d356f87",
     "scripts/council_signer.py": "b5a99c34b6341b9f3959d0e8ca038a68f6fe1b6dc89627418a1f9efb136c59b5",
     "scripts/pocketos_demo/app.py": "395ecf7f07dc10b248adfaed8977dfd954cf7d0df082eacac0cadbec64fcbe9d",
     "scripts/pocketos_demo/engines/__init__.py": "690a4879ad6c1f3067643b734936abfea07c8e563a67bb7df4ab5c571469e8f7",
