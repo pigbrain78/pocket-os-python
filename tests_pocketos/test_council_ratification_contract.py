@@ -28,6 +28,7 @@ The unit-level tests (1-8, 14-15) import the contract module directly. The
 over-HTTP tests (9-13, end-to-end) run against the live demo server.
 """
 
+import importlib
 import json
 import os
 import sys
@@ -353,3 +354,41 @@ def test_end_to_end_council_chain(client, seeded):
     assert "decision.ratified" in events
     assert "decision.executed" in events
     assert state["integrity"] == "INTACT"
+
+
+# ---------------------------------------------------------------------------
+# Production key isolation (module-level gate)
+# ---------------------------------------------------------------------------
+
+
+def _reload_gate():
+    """Re-import council_gate so the env-driven signing gate re-evaluates."""
+    # Pop the module so the env var is read fresh on import.
+    sys.modules.pop("pocketos_demo.engines.council_gate", None)
+    import pocketos_demo.engines.council_gate as cg
+    return cg
+
+
+def test_16_production_default_disables_onbox_signing():
+    """Production default (no POCKETOS_COUNCIL_DEMO_SIGNING): signing keys are
+    not loaded and sign_for_member returns None — no raw key is reachable via
+    the server-side signing helper."""
+    os.environ.pop("POCKETOS_COUNCIL_DEMO_SIGNING", None)
+    cg = _reload_gate()
+    assert cg.signing_enabled() is False
+    assert cg.sign_for_member("council-a", "x", "RATIFIED") is None
+    # Verification still works in production (off-box signatures only).
+    assert cg.verify_quorum("x", "RATIFIED", {}) is False  # no sigs -> no quorum
+
+
+def test_17_demo_mode_enables_onbox_signing_only_for_harness():
+    """Demo signing mode (POCKETOS_COUNCIL_DEMO_SIGNING=1) powers the local
+    test harness and browser demo only."""
+    os.environ["POCKETOS_COUNCIL_DEMO_SIGNING"] = "1"
+    cg = _reload_gate()
+    assert cg.signing_enabled() is True
+    sig = cg.sign_for_member("council-a", "x", "RATIFIED")
+    assert sig is not None
+    # Restore production default for the rest of the process.
+    os.environ.pop("POCKETOS_COUNCIL_DEMO_SIGNING", None)
+    _reload_gate()

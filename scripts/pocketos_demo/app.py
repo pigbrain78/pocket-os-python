@@ -568,6 +568,11 @@ def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, 
     decision = _DECISION_REGISTRY.get(decision_id)
     if decision is None:
         raise HTTPException(status_code=404, detail="unknown decision")
+    # In production (demo signing off) the signing keys are not in this process
+    # and are never reachable over HTTP. Members sign off-box.
+    if not council_gate.signing_enabled():
+        raise HTTPException(status_code=403,
+                            detail="council signing is disabled in this mode; members sign off-box")
     member = request.query_params.get("member", "")
     sig = council_gate.sign_for_member(member, decision_id, council_gate.RATIFIED_STATE)
     if sig is None:
