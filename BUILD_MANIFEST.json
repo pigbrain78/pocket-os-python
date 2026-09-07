@@ -1,10 +1,11 @@
 {
   "format": "pocketos-build-manifest",
   "version": "1.0.0",
-  "commit": "07cfbdd995f3dc205f86cc6d8598a7369ce8c9e9",
-  "generated": "2026-09-07T17:59:38Z",
+  "commit": "188e54d7c22af21c7ab8b7dbfc576af0c8012b41",
+  "generated": "2026-09-07T18:05:47Z",
   "note": "pins committed source tree; excludes self, demo_state.json (runtime), session plan.md",
   "files": {
+    ".github/workflows/ci.yml": "3f27d7c7541a156d1c3061c56023163cb6c1b79723d1f23c6b579dee46c74dee",
     "CHECKPOINT_MANIFEST.md": "00dcd5e4d4615f86750f3d733da34987f0a0b17a51384ff4c076fd9cf4c2ca2f",
     "RELEASE_NOTES.md": "eb43e0774f4920625a9cd80e59dba209fcfd4dfeb34078a92b6b0867c47dadad",
     "docs/POCKETOS_APP_ARCHITECTURE.md": "4f5396aea642a5b052e9c9ffcee7b6e52c2c013a3cd99d5c45161d6630d60a0e",
