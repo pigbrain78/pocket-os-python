@@ -86,6 +86,6 @@ Architecture already frozen and verified cross-client: SwiftUI View → Observab
 - [x] Recover the verified checkpoint and run the read-only persistence audit (ledger INTACT, suites green) before any change. — Recovering the verified Pocket OS checkpoint and running the read-only persistence audit — Checkpoint recovered; audit green: ledger 25 records chain-verified INTACT, server healthy, 96/96 tests pass
 - [x] Author the anti-drift architecture doc and freeze the shared web+iPhone contract. — Recovering the verified Pocket OS checkpoint and running the read-only persistence audit — Anti-drift architecture doc authored from the real implementation; shared web+iPhone contract frozen on the canonical /api surface
 - [x] Add any missing server-authoritative read projections; keep command surface to propose/ratify/reject. — Auditing the canonical core: confirming read projections already suffice and no execute leakage exists before any new surface — Canonical core verified complete: all control-room read domains served by /api; mutations auth-gated (401); no execute route; no new backend surface required
-- [ ] Build the full web control room as a pure client of the canonical API.
+- [~] Build the full web control room as a pure client of the canonical API. — Expanding the web control room across the full canonical domain set on the existing console
 - [ ] Build the iPhone projection + model layers and author the Apple-gated SwiftUI cockpit for Xcode.
 - [ ] Run the full verification gate (incl. critical negative tests) and checkpoint the result.

@@ -28,6 +28,12 @@
     { id: "twin", label: "Twin", glyph: "\u263e" },
     { id: "shadow", label: "AI Shadow", glyph: "\u2741" },
     { id: "decisions", label: "Decisions", glyph: "\u2696" },
+    { id: "memory", label: "Memory", glyph: "\u25c6" },
+    { id: "projects", label: "Projects", glyph: "\u25a0" },
+    { id: "loops", label: "Open Loops", glyph: "\u27f3" },
+    { id: "governance", label: "Governance", glyph: "\u269b" },
+    { id: "evidence", label: "Evidence", glyph: "\u2726" },
+    { id: "ledger", label: "Ledger", glyph: "\u279e" },
   ];
 
   var TOKEN = null;
@@ -428,6 +434,149 @@
       '<ul class="decision-list">' + cards + "</ul></section>";
   }
 
+  // =========================================================================
+  // Control-room expansion views
+  // Every view below is a READ-ONLY lens over the canonical projections the
+  // server returns (/api/state, /api/twin, /api/shadow, /api/decisions). The
+  // browser never computes authoritative epistemic state, provenance, or
+  // governance; it renders what the backend resolved. No view issues a mutation.
+  // =========================================================================
+
+  // ---- memory -----------------------------------------------------------
+  function memoryRows(records) {
+    var rows = "";
+    for (var i = records.length - 1; i >= 0; i--) {
+      var r = records[i];
+      if (r.event !== "memory.created" && r.event !== "knowledge.document") continue;
+      var title = (r.payload && r.payload.title) || "";
+      var tension = (r.payload && r.payload.tension) ? " tension" : "";
+      var meta = esc(r.event) + " #" + r.sequence + " &middot; src " + esc(r.source || "-");
+      rows += '<div class="rec" data-testid="mem-row">' +
+        '<span class="rec-kind">' + esc(r.event) + "</span>" +
+        '<span class="rec-meta">' + meta + "</span>" +
+        '<span class="rec-title' + tension + '">' + esc(title) + "</span></div>";
+    }
+    return rows;
+  }
+
+  function memoryContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var rows = memoryRows(state.records || []);
+    var legend = '<div class="epi-legend" data-testid="mem-legend">Epistemic statuses: ' +
+      '<span class="epi" style="border-color:#bdf0dc;color:#bdf0dc">VERIFIED</span> ' +
+      '<span class="epi" style="border-color:#9ce0ff;color:#9ce0ff">OBSERVED</span> ' +
+      '<span class="epi" style="border-color:#ffd9a0;color:#ffd9a0">INFERRED</span> ' +
+      '<span class="epi" style="border-color:#e3d9ff;color:#e3d9ff">UNCERTAIN</span> ' +
+      '<span class="epi" style="border-color:#ffb3b0;color:#ffb3b0">REJECTED</span> ' +
+      '<span class="epi" style="border-color:#cbd5e1;color:#cbd5e1">STALE</span></div>';
+    var note = (state.contradictions > 0)
+      ? '<div class="banner warn" data-testid="mem-contradiction" role="alert"><strong>' + state.contradictions +
+        " conflicting claim(s)</strong> in memory &mdash; both sides are shown with provenance; the system never silently picks one.</div>"
+      : '<div class="banner ok" role="status">No unresolved contradictions in memory.</div>';
+    return '<section class="panel"><header class="panel-head"><h2>Memory</h2>' +
+      '<span class="recmeta">canonical ledger &middot; read-only</span></header>' +
+      note + legend +
+      '<div class="reclist">' + (rows || "<div class='empty'>no memories</div>") + "</div></section>";
+  }
+
+  // ---- projects ---------------------------------------------------------
+  function projectsContent() {
+    if (!twin) return "<div class='empty'>Loading projects&hellip;</div>";
+    var t = twin.cognitive_twin || {};
+    var st = t.state || {};
+    var proj = (st.active_projects || []).map(function (i) { return itemRow(i, "project-item"); }).join("");
+    var loops = (st.open_loops || []).map(function (i) { return itemRow(i, "project-loop"); }).join("");
+    var cards = '<div class="card"><h3>Active projects</h3><ul>' + (proj || "<li class='empty'>none</li>") + "</ul></div>" +
+      '<div class="card"><h3>Open loops (linked)</h3><ul>' + (loops || "<li class='empty'>none</li>") + "</ul></div>" +
+      '<div class="card"><h3>Decision history</h3><ul>' +
+      ((t.decision_history || []).map(function (i) { return itemRow(i, "project-decision"); }).join("") || "<li class='empty'>none</li>") + "</ul></div>";
+    return '<section class="panel"><header class="panel-head"><h2>Projects</h2>' +
+      '<span class="recmeta">twin-1.0 fold &middot; advisory</span></header>' +
+      '<p class="prov">Projects link back into the memory graph through the canonical Twin projection. Project status is inferred from ledger activity unless VERIFIED.</p>' +
+      '<div class="cardgrid">' + cards + "</div></section>";
+  }
+
+  // ---- open loops -------------------------------------------------------
+  function loopsContent() {
+    if (!twin) return "<div class='empty'>Loading open loops&hellip;</div>";
+    var t = twin.cognitive_twin || {};
+    var st = t.state || {};
+    var loops = (st.open_loops || []).map(function (i) { return itemRow(i, "loop-item"); }).join("");
+    var obs = (t.recent_observations || []).map(function (i) { return itemRow(i, "loop-observation"); }).join("");
+    return '<section class="panel"><header class="panel-head"><h2>Open loops</h2>' +
+      '<span class="recmeta">awaiting resolution &middot; never auto-executed</span></header>' +
+      '<p class="prov">A loop is an open item &mdash; an unresolved decision, task, or follow-up. Inspect its context here; nothing executes merely because a loop exists.</p>' +
+      '<div class="cardgrid">' +
+      '<div class="card"><h3>Open</h3><ul>' + (loops || "<li class='empty'>no open loops</li>") + "</ul></div>" +
+      '<div class="card"><h3>Recent observations</h3><ul>' + (obs || "<li class='empty'>none</li>") + "</ul></div>" +
+      "</div></section>";
+  }
+
+  // ---- governance -------------------------------------------------------
+  function governanceContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var govRows = (state.records || []).filter(function (r) { return r.event === "governance.decided"; })
+      .map(function (r) {
+        var p = r.payload || {};
+        var cls = p.outcome === "approved" ? "st-good" : (p.outcome === "denied" ? "st-bad" : "st-warn");
+        return '<div class="rec" data-testid="gov-row">' +
+          '<span class="rec-kind">' + esc(p.outcome || r.event) + "</span>" +
+          '<span class="rec-meta">governance #' + r.sequence + " &middot; src " + esc(r.source || "-") + "</span>" +
+          '<span class="rec-title">' + esc(p.title || "") + "</span></div>";
+      }).join("");
+    var authority = '<div class="card"><h3>Authority chain</h3><ol class="chain" data-testid="gov-chain">' +
+      "<li>LLM proposes</li><li>Council evaluates</li><li>Governance authorizes</li>" +
+      "<li>Human ratifies</li><li>Kernel executes</li><li>Ledger records</li></ol></div>";
+    return '<section class="panel"><header class="panel-head"><h2>Governance</h2>' +
+      '<span class="recmeta">' + esc(state.counters || "") + "</span></header>" +
+      '<p class="prov"><strong>Memory may inform; it may not authorize.</strong> This UI presents governance state from the server. Ratification and rejection are the only human acts; execution requires a ratified decision and the EXECUTE permission, both enforced server-side.</p>' +
+      authority +
+      '<div class="card"><h3>Governance decisions</h3>' + (govRows || "<div class='empty'>none</div>") + "</div></section>";
+  }
+
+  // ---- evidence ---------------------------------------------------------
+  function evidenceContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var rows = "";
+    var recs = state.records || [];
+    for (var i = recs.length - 1; i >= 0; i--) {
+      var r = recs[i];
+      rows += '<div class="rec" data-testid="evidence-row" data-seq="' + r.sequence + '">' +
+        '<span class="rec-kind">#' + r.sequence + "</span>" +
+        '<span class="rec-meta">' + esc(r.event) + "</span>" +
+        '<span class="rec-title">' + esc((r.payload && r.payload.title) || "") + "</span>" +
+        '<code class="ev-hash" data-testid="evidence-hash">' + esc(r.hash) + "</code></div>";
+    }
+    var ver = state.integrity === "INTACT"
+      ? '<div class="banner ok" role="status">Every record&#39;s hash is chained to the previous (SHA-256 over canonical form). The full chain verifies INTACT.</div>'
+      : '<div class="banner warn" role="alert">Chain broken &mdash; evidence integrity compromised.</div>';
+    return '<section class="panel"><header class="panel-head"><h2>Evidence</h2>' +
+      '<span class="recmeta">"why does Pocket OS believe this?"</span></header>' + ver +
+      '<p class="prov">Each belief carries provenance (ledger#seq), confidence, and its supporting evidence sequences. The chain is recomputable for any record.</p>' +
+      '<div class="reclist">' + rows + "</div></section>";
+  }
+
+  // ---- ledger -----------------------------------------------------------
+  function ledgerContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var rows = "";
+    (state.records || []).forEach(function (r) {
+      var chain = r.previous_hash ? '<span class="pill st-good">chained</span>' : '<span class="pill st-warn">genesis</span>';
+      rows += '<div class="rec" data-testid="ledger-row" data-seq="' + r.sequence + '">' +
+        '<span class="rec-kind">#' + r.sequence + "</span>" +
+        '<span class="rec-meta">' + esc(r.event) + " &middot; " + esc(r.source || "-") + "</span>" +
+        '<span class="rec-title">' + esc((r.payload && r.payload.title) || "") + "</span>" + chain +
+        '<code class="ev-hash">prev ' + esc((r.previous_hash || "-").slice(0, 12)) + "</code></div>";
+    });
+    var ver = state.integrity === "INTACT"
+      ? '<div class="banner ok" role="status">Append-only ledger &middot; ' + (state.record_count || state.records.length) + " records &middot; hash chain VERIFIED INTACT.</div>"
+      : '<div class="banner warn" role="alert">Ledger compromised &mdash; verification failed.</div>';
+    return '<section class="panel"><header class="panel-head"><h2>Ledger</h2>' +
+      '<span class="recmeta">append-only &middot; read-only</span></header>' + ver +
+      '<p class="prov">This is the sole authoritative store. The UI cannot edit history; there is no client-side ledger. The Timeline tab reconstructs prior state from these records.</p>' +
+      '<div class="reclist">' + rows + "</div></section>";
+  }
+
   // ------------------------------------------------------------- content dispatch
   function contentFor(tab) {
     if (tab === "console") return consoleContent();
@@ -438,6 +587,12 @@
     if (tab === "twin") return twinContent();
     if (tab === "shadow") return shadowContent();
     if (tab === "decisions") return decisionsContent();
+    if (tab === "memory") return memoryContent();
+    if (tab === "projects") return projectsContent();
+    if (tab === "loops") return loopsContent();
+    if (tab === "governance") return governanceContent();
+    if (tab === "evidence") return evidenceContent();
+    if (tab === "ledger") return ledgerContent();
     return "<p>Unknown tab</p>";
   }
 
