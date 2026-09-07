@@ -1,0 +1,16 @@
+# Pocket OS + memory_brain — verified dependency pins.
+# These exact versions are what the 210-test matrix (82 memory_brain + 128
+# Pocket OS) was verified against in the cloud sandbox. CI runners MUST install
+# this file so the suite does not drift on Pydantic ForwardRef behavior,
+# FastAPI routing, or httpx/TestClient semantics.
+
+# Web layer
+fastapi==0.141.1
+uvicorn==0.52.4
+pydantic==2.13.4
+httpx==0.28.1
+
+# Tests
+pytest==9.0.3
+pytest-playwright==0.9.0
+playwright==1.62.0
