@@ -658,9 +658,41 @@
   function decisionAction(action, decisionId) {
     if (!TOKEN) { alert("sign in required"); return; }
     var url = "/api/decisions/" + encodeURIComponent(decisionId) + "/" + action;
+    if (action === "ratify") {
+      // Ratification requires a council quorum (QUORUM=2 distinct members).
+      // The UI is a control surface: it assembles signatures by requesting each
+      // member to sign (server-side keys) and submits them. Bearer RATIFY
+      // permission alone cannot ratify; the server verifies the quorum.
+      assembleQuorumAndRatify(decisionId);
+      return;
+    }
     postJSON(url, {}, function (s) {
       if (s && s.error) { alert("denied: " + (s.error.message || s.error.code)); }
       refreshAll();
+    });
+  }
+
+  // Assemble a council quorum (2 distinct member signatures) then ratify.
+  function assembleQuorumAndRatify(decisionId) {
+    var members = ["council-a", "council-b"];  // QUORUM = 2
+    var sigs = {};
+    var pending = members.length;
+    var failed = false;
+    members.forEach(function (member) {
+      postJSON("/api/decisions/" + encodeURIComponent(decisionId) + "/council-sign?member=" + encodeURIComponent(member),
+        {}, function (s) {
+          pending -= 1;
+          if (failed) { if (pending === 0) refreshAll(); return; }
+          if (!s || !s.ok || !s.signature) { failed = true; alert("council sign failed for " + member); }
+          else { sigs[member] = s.signature; }
+          if (pending === 0 && !failed) {
+            postJSON("/api/decisions/" + encodeURIComponent(decisionId) + "/ratify",
+              { signatures: sigs }, function (r) {
+                if (r && r.error) { alert("ratification denied: " + (r.error.message || r.error.code)); }
+                refreshAll();
+              });
+          }
+        });
     });
   }
 

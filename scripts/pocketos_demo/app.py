@@ -50,7 +50,9 @@ from .engines import (
     ConstitutionalRuntime,
     ExecutionDenied,
     reasoning_hash,
+    STATUS_AWAITING_RATIFICATION,
 )
+from .engines import council_gate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -394,7 +396,10 @@ class LoginBody(BaseModel):
 
 
 class RatifyBody(BaseModel):
-    claimed_authority: str = "NONE"  # ignored
+    claimed_authority: str = "NONE"  # ignored — never authoritative
+    # Council signatures: {member: hmac_signature}. The ledger event is emitted
+    # ONLY when a threshold of distinct members verifies under active keys.
+    signatures: dict[str, str] = {}
 
 
 class ExecuteBody(BaseModel):
@@ -551,10 +556,32 @@ def api_decisions_council_approve(decision_id: str, request: Request) -> dict[st
     return {**_projection_base(), "ok": True, "decision": _DECISION_REGISTRY.get(decision_id).view()}
 
 
+@app.post("/api/decisions/{decision_id}/council-sign")
+def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, Any]:
+    """Request a council member signature over a decision (demo assembly of a
+    quorum). Requires COUNCIL permission. Keys never leave the server; returns
+    the HMAC signature for the named member so a session can assemble a
+    threshold. Production members would sign off-box and submit signatures only.
+    """
+    _require_permission(_bearer(request), PERM_COUNCIL)
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    member = request.query_params.get("member", "")
+    sig = council_gate.sign_for_member(member, decision_id, council_gate.RATIFIED_STATE)
+    if sig is None:
+        raise HTTPException(status_code=400, detail=f"unknown council member: {member}")
+    return {**_projection_base(), "ok": True, "member": member, "signature": sig,
+            "state": council_gate.RATIFIED_STATE, "decision_id": decision_id}
+
+
 @app.post("/api/decisions/{decision_id}/ratify")
 def api_decisions_ratify(decision_id: str, request: Request, body: RatifyBody | None = None) -> dict[str, Any]:
-    # Ratification is explicit HUMAN action recorded as an event, requiring the
-    # RATIFY permission. claimed_authority is ignored.
+    # Bearer RATIFY permission is NECESSARY but INSUFFICIENT: it permits a
+    # session to REQUEST ratification. Authority to ratify comes ONLY from a
+    # threshold of distinct council members whose signatures verify under their
+    # active keys. client claimed_authority is ignored.
     _require_permission(_bearer(request), PERM_RATIFY)
     _sync_decision_state()
     decision = _DECISION_REGISTRY.get(decision_id)
@@ -562,7 +589,39 @@ def api_decisions_ratify(decision_id: str, request: Request, body: RatifyBody | 
         raise HTTPException(status_code=404, detail="unknown decision")
     if decision.rejected:
         raise HTTPException(status_code=409, detail="decision was rejected")
-    STATE.append("decision.ratified", "Human", {"decision_id": decision_id, "authority": "HUMAN"})
+    if decision.human_ratified:
+        raise HTTPException(status_code=409, detail="decision already ratified")
+
+    # Require the decision to be past council (AWAITING_RATIFICATION) so the
+    # council signatures are ratifying a decision the council has already seen.
+    if decision.status != STATUS_AWAITING_RATIFICATION:
+        raise HTTPException(
+            status_code=409,
+            detail="decision must be council-approved (AWAITING_RATIFICATION) before ratification",
+        )
+
+    sigs = (body.signatures if body else {}) or {}
+    state = council_gate.RATIFIED_STATE
+    if not council_gate.verify_quorum(decision_id, state, sigs):
+        detail = council_gate.validate_signatures(decision_id, state, sigs)
+        return {
+            **_projection_base(), "ok": False,
+            "error": {
+                "code": "COUNCIL_QUORUM_NOT_MET",
+                "message": "ratification requires a quorum of distinct council signatures",
+                "decision_id": decision_id,
+                "diagnostics": detail,
+            },
+        }
+
+    # Authoritative ledger event — emitted ONLY after verified council quorum.
+    STATE.append("decision.ratified", "Council", {
+        "decision_id": decision_id,
+        "state": state,
+        "ratifiers": sorted(sigs.keys()),
+        "authority": "COUNCIL_QUORUM",
+        "claimed_authority_ignored": (body.claimed_authority if body else "NONE"),
+    })
     _broadcast(STATE.records()[-1])
     _sync_decision_state()
     return {**_projection_base(), "ok": True, "decision": _DECISION_REGISTRY.get(decision_id).view()}

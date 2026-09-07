@@ -62,8 +62,20 @@ def _council_approve(client, token: str, did: str):
 
 
 def _ratify(client, token: str, did: str):
-    r = client.post(f"/api/decisions/{did}/ratify", headers=_auth(token), json={})
+    """Ratify through the REAL council contract: assemble a quorum of distinct
+    member signatures via /council-sign, then submit them to /ratify. Bearer
+    RATIFY permission alone is insufficient — quorum is required."""
+    sigs = {}
+    for member in ("council-a", "council-b"):  # QUORUM = 2 distinct members
+        r = client.post(f"/api/decisions/{did}/council-sign",
+                        headers=_auth(token), params={"member": member})
+        assert r.status_code == 200, r.text
+        sigs[member] = r.json()["signature"]
+    r = client.post(f"/api/decisions/{did}/ratify",
+                    headers=_auth(token), json={"signatures": sigs})
     assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True, r.text
+    return r
 
 
 def _decisions(client) -> list[dict]:

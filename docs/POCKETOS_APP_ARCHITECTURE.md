@@ -51,7 +51,8 @@ All client traffic goes to the canonical HTTP/SSE API. Endpoints (verified curre
 | POST | `/api/logout` | revoke session | bearer |
 | POST | `/api/decisions/propose` | create proposal | PROPOSE |
 | POST | `/api/decisions/{id}/council-approve` | council evaluation | COUNCIL |
-| POST | `/api/decisions/{id}/ratify` | **human ratification** | RATIFY |
+| POST | `/api/decisions/{id}/council-sign` | request a council member signature (demo quorum assembly) | COUNCIL |
+| POST | `/api/decisions/{id}/ratify` | **ratification via verified council quorum** | RATIFY + quorum |
 | POST | `/api/decisions/{id}/reject` | human rejection | RATIFY |
 | POST | `/api/decisions/{id}/execute` | kernel execution | EXECUTE + ratified |
 | GET | `/api/stream` | SSE live spine (observational) | — |
@@ -64,9 +65,13 @@ client. The `/api/demo/*` and `/api/test/*` mutators are ADMIN-gated, demo/test 
 
 **Authority is never client-supplied.** Request bodies that carry `claimed_authority`
 are accepted and then **ignored** by the runtime. `_require_permission` binds to the
-server session's permission set; `ConstitutionalRuntime.execute` re-derives human
-authority from the **ledger** (a ratified decision), never from an in-memory flag a
-client could flip.
+server session's permission set. **Bearer permission is necessary but insufficient
+for ratification**: a `decision.ratified` ledger event is emitted ONLY after a
+threshold of distinct council members verifies under their active keys
+(`council_ratification.py` contract via `engines/council_gate.py`). The runtime's
+`ConstitutionalRuntime.execute` then re-derives authority from that ledger event —
+which is authoritative by construction because it can only exist after verified
+council quorum. There is no alternate "permission -> ratify event" channel.
 
 ### Decision lifecycle (constitutional path)
 
@@ -127,8 +132,15 @@ logic as authoritative. Governance counters are a deterministic fold
 
 ```
 LLM proposes ──► Council evaluates ──► Governance authorizes
-        ──► Human ratifies ──► Kernel executes ──► Ledger records
+        ──► Council QUORUM verifies (cryptographic) ──► ratified
+        ──► Kernel executes ──► Ledger records
 ```
+
+**Ratification is cryptographic quorum, not bearer permission.** A session with
+RATIFY permission may *request* ratification by submitting council signatures;
+the `decision.ratified` event lands only when QUORUM (2) distinct members verify
+under their active HMAC keys. Client/local state, the Cognitive Twin, the AI
+Shadow, and forged `claimed_authority` can never produce authority.
 
 Every screen shows proposals/recommendations. The only human acts are the
 server-permitted `ratify` / `reject`. **There is no execute verb in any client.**
