@@ -1,0 +1,61 @@
+# Pocket OS + memory_brain CI
+# Runs the full verified matrix on clean runners against the PINNED dependency
+# versions (requirements.txt). A green run here is the gate before merging
+# feature/council-memory-convergence into main.
+
+name: pocketos-ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Install the pinned dependency set — no drift on Pydantic/FastAPI/httpx.
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Browser suites (control room + governance UI) drive a real browser.
+      - name: Install Playwright Chromium
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+
+      - name: Start demo server (port 8787)
+        run: |
+          nohup python -m uvicorn scripts.pocketos_demo.app:app --host 127.0.0.1 --port 8787 > /tmp/pocketos_server.log 2>&1 &
+          sleep 4
+          curl -s http://127.0.0.1:8787/api/health
+        env:
+          POCKETOS_COUNCIL_DEMO_SIGNING: "1"
+
+      - name: Run memory_brain suite
+        run: pytest memory_brain/tests -q
+        env:
+          POCKETOS_COUNCIL_DEMO_SIGNING: "1"
+
+      - name: Run Pocket OS suite (incl. governance + manifest integrity)
+        run: pytest tests_pocketos -q
+        env:
+          POCKETOS_COUNCIL_DEMO_SIGNING: "1"
+
+      # The 213-test matrix must pass AND the pinned source tree must be intact.
+      - name: Verify manifest integrity (byte-faithful source)
+        run: |
+          python -m pytest tests_pocketos/test_build_manifest.py -q
+          echo "manifest files pinned:"
+          python -c "import json; print(len(json.load(open('BUILD_MANIFEST.json'))['files']))"
