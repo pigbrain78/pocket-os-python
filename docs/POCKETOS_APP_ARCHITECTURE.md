@@ -232,3 +232,24 @@ commits. After each milestone: save files, verify build, run tests, record state
 checkpoint. If the environment resets, restore from the durable checkpoint — do not
 start over blind. The ledger JSON is the single authoritative durable store; treat it
 as the database.
+
+
+## memory_brain convergence (council-gated irreversible mutations)
+
+memory_brain (the Memory Second Brain subsystem) is wired onto the SAME verified
+council ratification authority that governs `decision.ratified`:
+
+    an irreversible memory mutation (retract / delete / supersede / merge)
+        ⇐ verified council quorum
+    and nothing else.
+
+A bare human review APPROVE is NOT authority on a council-gated brain; it may
+PROPOSE, never AUTHORIZE. `MemoryBrain(require_council_for_irreversible=True)`
+enables the gate; the default preserves the existing single-reviewer path so
+ordinary capture and low-confidence review are not over-gated. On a gated brain,
+`ratify_council(item_id, signatures)` is the ONLY path that applies an
+irreversible mutation — it verifies a threshold of distinct members under active
+keys for a candidate bound to (memory_id, operation), records
+`MEMORY_COUNCIL_RATIFIED`, then applies the mutation. This closes the same
+authority boundary for sensitive memory that Pocket OS closes for decisions:
+permission/approval ≠ authority; only verified consensus ratifies.
