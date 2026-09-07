@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/workspace/foiZKLGlt7axysLt1LOfO540FfP2/ios/.build/x86_64-unknown-linux-gnu/debug/PocketOSKitPackageTests.build/master.swiftdeps"
+  },
+  "/workspace/foiZKLGlt7axysLt1LOfO540FfP2/ios/.build/x86_64-unknown-linux-gnu/debug/PocketOSKitPackageTests.derived/runner.swift": {
+    "dependencies": "/workspace/foiZKLGlt7axysLt1LOfO540FfP2/ios/.build/x86_64-unknown-linux-gnu/debug/PocketOSKitPackageTests.build/runner.d",
+    "object": "/workspace/foiZKLGlt7axysLt1LOfO540FfP2/ios/.build/x86_64-unknown-linux-gnu/debug/PocketOSKitPackageTests.build/runner.swift.o",
+    "swiftmodule": "/workspace/foiZKLGlt7axysLt1LOfO540FfP2/ios/.build/x86_64-unknown-linux-gnu/debug/PocketOSKitPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/workspace/foiZKLGlt7axysLt1LOfO540FfP2/ios/.build/x86_64-unknown-linux-gnu/debug/PocketOSKitPackageTests.build/runner.swiftdeps"
+  }
+}
