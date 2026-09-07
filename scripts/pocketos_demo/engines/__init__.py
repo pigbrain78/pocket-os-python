@@ -1,0 +1,116 @@
+"""Pocket OS demo engines — deterministic core for the rehearsal harness.
+
+Each engine is a pure, side-effect-free module over the in-memory ledger so it
+can be exercised by unit suites and by the browser app identically.
+"""
+
+from .ledger import (
+    canonical,
+    hash_record,
+    Ledger,
+    LedgerVerification,
+    verify_chain,
+)
+from .replay import Scrubber, ScrubberError
+from .genome import GENOME_TRAITS, genome_traits
+from .governance import governance_counters, GovernanceCounters
+from .seeds import (
+    DEMO_FEATURE_GATE,
+    SEED_RECORDS,
+    seed_ledger,
+    SEED_CONTRADICTIONS,
+    contradiction_count,
+)
+from .cognitive import (
+    cognitive_state,
+    CognitiveState,
+    TwinItem,
+    EPISTEMIC_LEGEND,
+    OBSERVED,
+    VERIFIED,
+    INFERRED,
+    UNCERTAIN,
+    REJECTED,
+    STALE,
+)
+from .shadow import (
+    shadow_state,
+    ShadowItem,
+    SHADOW_TYPES,
+    OBSERVATION,
+    INSIGHT,
+    WARNING,
+    OPPORTUNITY,
+    QUESTION,
+    RECOMMENDATION,
+    PROPOSAL,
+)
+from .decisions import (
+    DECISION_LIFECYCLE,
+    Decision,
+    DecisionRegistry,
+    ConstitutionalRuntime,
+    ExecutionDenied,
+    reasoning_hash,
+    STATUS_PENDING,
+    STATUS_COUNCIL,
+    STATUS_AWAITING_RATIFICATION,
+    STATUS_RATIFIED,
+    STATUS_REJECTED,
+    STATUS_EXECUTED,
+    HUMAN_AUTHORITY,
+    NO_AUTHORITY,
+)
+
+__all__ = [
+    "canonical",
+    "hash_record",
+    "Ledger",
+    "LedgerVerification",
+    "verify_chain",
+    "Scrubber",
+    "ScrubberError",
+    "GENOME_TRAITS",
+    "genome_traits",
+    "governance_counters",
+    "GovernanceCounters",
+    "DEMO_FEATURE_GATE",
+    "SEED_RECORDS",
+    "seed_ledger",
+    "SEED_CONTRADICTIONS",
+    "contradiction_count",
+    "cognitive_state",
+    "CognitiveState",
+    "TwinItem",
+    "EPISTEMIC_LEGEND",
+    "OBSERVED",
+    "VERIFIED",
+    "INFERRED",
+    "UNCERTAIN",
+    "REJECTED",
+    "STALE",
+    "shadow_state",
+    "ShadowItem",
+    "SHADOW_TYPES",
+    "OBSERVATION",
+    "INSIGHT",
+    "WARNING",
+    "OPPORTUNITY",
+    "QUESTION",
+    "RECOMMENDATION",
+    "PROPOSAL",
+    "DECISION_LIFECYCLE",
+    "Decision",
+    "DecisionRegistry",
+    "ConstitutionalRuntime",
+    "ExecutionDenied",
+    "reasoning_hash",
+    "STATUS_PENDING",
+    "STATUS_COUNCIL",
+    "STATUS_AWAITING_RATIFICATION",
+    "STATUS_RATIFIED",
+    "STATUS_REJECTED",
+    "STATUS_EXECUTED",
+    "HUMAN_AUTHORITY",
+    "NO_AUTHORITY",
+]
