@@ -9,4 +9,4 @@ services:
     autoDeploy: true
     envVars:
       - key: POCKETOS_COUNCIL_DEMO_SIGNING
-        value: "1"
+        value: "0"
