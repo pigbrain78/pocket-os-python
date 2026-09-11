@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -556,6 +557,17 @@ class AuditPreferencesBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="PocketOS Web Demo")
+_cors_origins = [origin.strip() for origin in os.environ.get(
+    "POCKETOS_CORS_ORIGINS",
+    "https://8081-ifn5nx1y0robf8dqdk5bp-f24c55de.us1.manus.computer,http://localhost:8081,http://127.0.0.1:8081",
+).split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+)
 
 
 @app.get("/api/health")
