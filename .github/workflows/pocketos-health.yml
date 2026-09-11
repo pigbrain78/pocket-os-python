@@ -1,0 +1,17 @@
+name: PocketOS canonical API health
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check canonical health
+        run: |
+          set -euo pipefail
+          body=$(curl --fail --silent --show-error --max-time 20 https://pocketos-canonical-api.onrender.com/api/v1/health)
+          echo "$body"
+          python -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("status") == "healthy" and d.get("integrity") == "INTACT" and d.get("valid") is True' "$body"
