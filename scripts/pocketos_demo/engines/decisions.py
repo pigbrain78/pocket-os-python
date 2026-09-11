@@ -252,6 +252,29 @@ class ConstitutionalRuntime:
             raise ExecutionDenied(decision_id, "decision was rejected")
         if not auth["ratified"]:
             raise ExecutionDenied(decision_id, "decision is not human-ratified")
+        # Fail-closed on the council block chain: if THIS decision was ratified
+        # by a council quorum (its ratified event carries a sealed block), then
+        # execution authority is valid ONLY while the full reconstructed council
+        # chain verifies end-to-end to GENESIS. A tampered block, gap, reorder,
+        # or forged block zeroes authority even though a `decision.ratified`
+        # event is still present. Legacy Human-ratified events (seed/engine
+        # fixtures, no council block) keep their existing authority path.
+        from . import council_gate
+        ratified_records = [
+            r for r in self._ledger.records()
+            if (r.get("event") or "") == "decision.ratified"
+        ]
+        council_blocks = council_gate.blocks_from_records(ratified_records)
+        if council_blocks and not council_gate.chain_intact(council_blocks):
+            raise ExecutionDenied(decision_id, "council ratification chain corrupted")
+        # Locate THIS decision's own block in the verified chain. It grants
+        # execution authority only when sealed into an execution-authorized
+        # state (RATIFIED or PROMOTED) by the council.
+        own = next((b for b in council_blocks if b.get("candidate_id") == decision_id), None)
+        if council_blocks and own is None:
+            raise ExecutionDenied(decision_id, "decision not anchored in council chain")
+        if own is not None and not council_gate.execution_authorized_state(own.get("state")):
+            raise ExecutionDenied(decision_id, "decision not ratified/promoted in council chain")
         if auth["executed"]:
             raise ExecutionDenied(decision_id, "decision already executed")
         record = self._ledger.append(

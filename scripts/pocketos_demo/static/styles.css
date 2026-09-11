@@ -131,3 +131,23 @@ input { font-family: var(--mono); }
   .cardgrid { grid-template-columns: 1fr; }
   .app { padding: 12px 12px 40px; }
 }
+
+/* ---- control-room expansion (memory/projects/loops/governance/evidence/ledger) ---- */
+.epi-legend { font-size: 11px; color: var(--muted); margin: 2px 0 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rec-title.tension { color: #ffd9a0; }
+.chain { margin: 4px 0 8px; padding-left: 20px; color: var(--ink); font-size: 12.5px; }
+.chain li { padding: 2px 0; }
+.chain li:first-child { color: var(--muted); }
+.chain li:last-child { color: #bdf0dc; }
+.ev-hash { font-size: 9.5px; color: var(--muted); flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- decision authority-state components (permission != authority) ---- */
+.auth-components { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 4px; }
+.auth-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+.auth-label { color: var(--muted); font-size: 10px; }
+.auth-detail { color: var(--muted); font-size: 9px; font-style: italic; }
+.auth-verdict { margin: 6px 0 2px; padding: 5px 8px; font-size: 11px; font-weight: 600; letter-spacing: .3px;
+  border: 1px solid; border-radius: 4px; }
+.auth-verdict.st-bad { color: var(--bad, #ef5350); border-color: #ef5350; background: rgba(239,83,80,.08); }
+.auth-verdict.st-warn { color: var(--warn, #e2b93d); border-color: #e2b93d; background: rgba(226,185,61,.07); }
+.auth-verdict.st-good { color: var(--good, #4dbd84); border-color: #4dbd84; background: rgba(77,189,132,.08); }

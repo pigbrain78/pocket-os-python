@@ -15,6 +15,7 @@
   var twin = null;        // /api/twin
   var shadow = null;      // /api/shadow
   var decisions = null;   // /api/decisions
+  var build = null;       // /api/build
   var session = null;     // {token, subject, permissions} | null
   var currentTab = "console";
   var streamStatus = "off";
@@ -28,6 +29,13 @@
     { id: "twin", label: "Twin", glyph: "\u263e" },
     { id: "shadow", label: "AI Shadow", glyph: "\u2741" },
     { id: "decisions", label: "Decisions", glyph: "\u2696" },
+    { id: "memory", label: "Memory", glyph: "\u25c6" },
+    { id: "projects", label: "Projects", glyph: "\u25a0" },
+    { id: "loops", label: "Open Loops", glyph: "\u27f3" },
+    { id: "governance", label: "Governance", glyph: "\u269b" },
+    { id: "evidence", label: "Evidence", glyph: "\u2726" },
+    { id: "ledger", label: "Ledger", glyph: "\u279e" },
+    { id: "build", label: "Build", glyph: "\u2699" },
   ];
 
   var TOKEN = null;
@@ -39,81 +47,93 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  // ------------------------------------------------------------- http
-  // The UI no longer calls fetch() or raw API routes directly. All data
-  // access is through the pocket client (window.pocket). The client owns the
-  // wire (transport), request ids, and error normalization.
+  function authHeaders() {
+    return TOKEN ? { "Authorization": "Bearer " + TOKEN } : {};
+  }
+
+  function getJSON(url, cb) {
+    fetch(url).then(function (r) { return r.json(); }).then(cb).catch(function () {});
+  }
+
+  function postJSON(url, body, cb) {
+    fetch(url, {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify(body || {}),
+    }).then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(cb).catch(function () {});
+  }
 
   // ------------------------------------------------------------- session
   function loggedIn() { return !!TOKEN; }
   function hasPerm(p) { return !!session && session.permissions.indexOf(p) !== -1; }
 
-  function syncPocketToken() { pocket.session.setToken(TOKEN); }
-
   function refreshSession() {
     if (!TOKEN) { session = null; render(); return; }
-    syncPocketToken();
-    pocket.session.me().then(function (s) {
-      if (s && s.subject) { session = s; render(); }
-    }).catch(function (e) {
-      // 401 (expired/revoked) clears the session; other failures keep the UI
-      // usable but note the degraded state.
-      if (pocket.errorCode(e) === "AUTHENTICATION_REQUIRED") {
-        TOKEN = null; syncPocketToken(); session = null; render();
-      }
-    });
+    fetch("/api/session/me", { headers: authHeaders() })
+      .then(function (r) {
+        if (r.status === 401) { TOKEN = null; session = null; render(); return; }
+        return r.json();
+      })
+      .then(function (s) { if (s && s.subject) { session = s; render(); } })
+      .catch(function () {});
   }
 
   function login(username, password) {
-    pocket.session.login(username, password).then(function (s) {
+    postJSON("/api/login", { username: username, password: password }, function (s) {
       if (s && s.token) {
         TOKEN = s.token;
-        syncPocketToken();
         session = { subject: s.subject, permissions: s.permissions, expires_at: s.expires_at };
         refreshState(); render();
+      } else {
+        alert("login failed");
       }
-    }).catch(function () {
-      alert("login failed");
     });
   }
 
   function logout() {
     // Revoke the session server-side so the token cannot be reused.
     if (TOKEN) {
-      pocket.session.logout().catch(function () {}); // local logout proceeds regardless
+      fetch("/api/logout", { method: "POST", headers: authHeaders() })
+        .catch(function () {}); // local logout proceeds regardless
     }
-    TOKEN = null; syncPocketToken(); session = null; refreshState(); render();
+    TOKEN = null; session = null; refreshState(); render();
   }
 
   // ------------------------------------------------------------- refresh
   function refreshState() {
-    pocket.console.state().then(function (s) { state = s; render(); }).catch(function () {});
+    getJSON("/api/state", function (s) { state = s; render(); });
   }
-  function refreshScrub() { pocket.console.scrub().then(function (s) { scrub = s; render(); }).catch(function () {}); }
-  function refreshTwin() { pocket.console.twin().then(function (s) { twin = s; render(); }).catch(function () {}); }
-  function refreshShadow() { pocket.console.shadow().then(function (s) { shadow = s; render(); }).catch(function () {}); }
-  function refreshDecisions() { pocket.console.decisions().then(function (s) { decisions = s; render(); }).catch(function () {}); }
+  function refreshScrub() { getJSON("/api/scrub", function (s) { scrub = s; render(); }); }
+  function refreshTwin() { getJSON("/api/twin", function (s) { twin = s; render(); }); }
+  function refreshShadow() { getJSON("/api/shadow", function (s) { shadow = s; render(); }); }
+  function refreshDecisions() { getJSON("/api/decisions", function (s) { decisions = s; render(); }); }
+  function refreshBuild() { getJSON("/api/build", function (s) { build = s; render(); }); }
 
   function refreshAll() {
-    refreshState(); refreshScrub(); refreshTwin(); refreshShadow(); refreshDecisions();
+    refreshState(); refreshScrub(); refreshTwin(); refreshShadow(); refreshDecisions(); refreshBuild();
   }
 
   // ------------------------------------------------------------- live spine (SSE)
   function startStream() {
-    // The pocket client owns the EventSource lifecycle. The UI only subscribes
-    // to normalized observations and to stream-status changes; it never touches
-    // EventSource or the wire path directly.
-    pocket.events.onStatus(function (s) {
-      streamStatus = s;
-      render();
-    });
-    pocket.events.subscribe(function (event) {
+    if (typeof EventSource === "undefined") { streamStatus = "unsupported"; return; }
+    var es = new EventSource("/api/stream");
+    streamStatus = "connecting";
+    es.addEventListener("hello", function () { streamStatus = "live"; render(); });
+    es.addEventListener("event", function (e) {
       // A received event is observational — the UI refetches the authoritative
       // projection rather than trusting the push payload as its own action.
       streamStatus = "live";
       refreshAll();
     });
-    pocket.events.connect();
+    es.onerror = function () {
+      // Auto-reconnect: EventSource reconnects by itself. We refetch state so a
+      // missed event during the drop is reconciled.
+      streamStatus = "reconnecting";
+      render();
+      refreshAll();
+    };
+    window.__es = es;
   }
 
   // ------------------------------------------------------------- layout
@@ -371,9 +391,54 @@
 
   // ------------------------------------------------------------- decisions
   function decisionCard(d) {
-    var stage = esc(d.stage || "");
     var status = esc(d.status || "");
-    var stcls = /RATIFIED|EXECUTED/.test(status) ? "st-good" : (/REJECTED/.test(status) ? "st-bad" : "st-warn");
+    // Independent authority-state components. Each comes from the backend;
+    // the UI never derives executable-ness from permission alone.
+    var ratified = d.human_ratified === true;
+    var rejected = d.rejected === true;
+    var executed = !!d.executed_seq;
+    var executable = d.can_execute === true;   // authoritative: backend RATIFIED
+
+    // Derived display stage for the human, mapped from canonical backend fields.
+    var term;
+    if (rejected) term = ["REJECTED", "EXECUTION BLOCKED"];
+    else if (executed) term = ["EXECUTED", "EVIDENCE RECORDED"];
+    else if (!ratified && !executed) term = ["NOT HUMAN-RATIFIED", "EXECUTION BLOCKED"];
+    else if (ratified && executable) term = ["HUMAN RATIFIED", "EXECUTABLE"];
+    else term = [status, ""];
+
+    function stateBlock(label, ok, detail) {
+      return '<div class="auth-state">' +
+        '<span class="auth-label">' + esc(label) + "</span>" +
+        '<span class="pill ' + (ok ? "st-good" : "st-warn") + '">' + esc(ok ? "YES" : "NO") + "</span>" +
+        (detail ? '<span class="auth-detail">' + detail + "</span>" : "") + "</div>";
+    }
+
+    // User permission is presented as the client's capability only — it is
+    // never shown as execution authority (the server re-validates).
+    var myPerm = loggedIn() && hasPerm("EXECUTE");
+    var components =
+      stateBlock("User has EXECUTE permission", myPerm, myPerm ? "client capability only" : "sign in with execute perm") +
+      stateBlock("Governance approved", d.council_approved === true, "") +
+      stateBlock("Human ratified", ratified, "") +
+      stateBlock("Capability valid", executable && ratified, "backend: can_execute") +
+      stateBlock("Execution started", executed, executed ? "ledger seq #" + d.executed_seq : "") +
+      stateBlock("Evidence recorded", executed, executed ? d.evidence_stage || "EVIDENCE" : "no execution evidence");
+
+    var verdict = "";
+    if (rejected) {
+      verdict = '<div class="auth-verdict st-bad" data-testid="exec-blocked">REJECTED — execution blocked</div>';
+    } else if (!ratified) {
+      verdict = '<div class="auth-verdict st-warn" data-testid="exec-blocked">NOT HUMAN-RATIFIED — execution blocked</div>';
+    } else if (executed) {
+      verdict = '<div class="auth-verdict st-good" data-testid="exec-state">EXECUTED — evidence recorded</div>';
+    } else if (executable) {
+      // Show "Execution available" ONLY because the backend reports it.
+      verdict = '<div class="auth-verdict st-good" data-testid="exec-available">Execution available (backend-confirmed)</div>';
+    }
+
+    // Mutation controls. Execute appears ONLY when the backend reports
+    // can_execute AND the session carries EXECUTE; the server re-validates.
     var controls = "";
     if (loggedIn() && hasPerm("COUNCIL") && (d.status === "PENDING" || d.status === "COUNCIL")) {
       controls += '<button class="btn" data-action="council-approve" data-did="' + esc(d.decision_id) + '">Approve (council)</button>';
@@ -382,20 +447,23 @@
       controls += '<button class="btn btn-primary" data-action="ratify" data-did="' + esc(d.decision_id) + '">Ratify (human)</button>' +
         '<button class="btn btn-danger" data-action="reject" data-did="' + esc(d.decision_id) + '">Reject</button>';
     }
-    if (loggedIn() && hasPerm("EXECUTE") && d.status === "RATIFIED") {
+    if (loggedIn() && hasPerm("EXECUTE") && executable && !executed) {
       controls += '<button class="btn btn-primary" data-action="execute" data-did="' + esc(d.decision_id) + '">Execute</button>';
     }
     var lifecycle = d.lifecycle.map(function (st) {
-      var on = st === stage;
+      var on = st === (d.stage || "");
       return '<span class="lc' + (on ? " lc-on" : "") + '">' + esc(st) + "</span>";
     }).join('<span class="lc-arrow">&rsaquo;</span>');
-    return '<li class="decision-card" data-testid="decision-card" data-did="' + esc(d.decision_id) + '">' +
+
+    return '<li class="decision-card" data-testid="decision-card" data-did="' + esc(d.decision_id) + '" data-can-execute="' + (executable ? "true" : "false") + '">' +
       '<div class="dec-head"><span class="tag">' + esc(d.decision_id) + "</span>" +
-      '<span class="pill ' + stcls + '" data-testid="decision-status">' + status + "</span>" +
-      '<span class="pill ' + (d.human_ratified ? "st-good" : "st-warn") + '" data-testid="decision-ratified">' + (d.human_ratified ? "RATIFIED" : "NOT RATIFIED") + "</span></div>" +
+      '<span class="pill ' + (rejected ? "st-bad" : (executable ? "st-good" : "st-warn")) + '" data-testid="decision-status">' + status + "</span>" +
+      '<span class="pill ' + (ratified ? "st-good" : "st-warn") + '" data-testid="decision-ratified">' + (ratified ? "RATIFIED" : "NOT RATIFIED") + "</span></div>" +
       '<h3>' + esc(d.title) + "</h3>" +
       '<div class="dec-meta">risk ' + esc(d.risk) + " &middot; reversible " + (d.reversible ? "yes" : "no") +
       " &middot; reasoning " + esc(d.reason_hash) + " &middot; proposal #" + (d.proposal_seq || "-") + "</div>" +
+      '<div class="auth-components" data-testid="auth-components">' + components + "</div>" +
+      verdict +
       '<div class="lifecycle" data-testid="lifecycle">' + lifecycle + "</div>" +
       (controls ? '<div class="dec-actions">' + controls + "</div>" : "") +
       "</li>";
@@ -417,7 +485,177 @@
       '<ul class="decision-list">' + cards + "</ul></section>";
   }
 
+  // =========================================================================
+  // Control-room expansion views
+  // Every view below is a READ-ONLY lens over the canonical projections the
+  // server returns (/api/state, /api/twin, /api/shadow, /api/decisions). The
+  // browser never computes authoritative epistemic state, provenance, or
+  // governance; it renders what the backend resolved. No view issues a mutation.
+  // =========================================================================
+
+  // ---- memory -----------------------------------------------------------
+  function memoryRows(records) {
+    var rows = "";
+    for (var i = records.length - 1; i >= 0; i--) {
+      var r = records[i];
+      if (r.event !== "memory.created" && r.event !== "knowledge.document") continue;
+      var title = (r.payload && r.payload.title) || "";
+      var tension = (r.payload && r.payload.tension) ? " tension" : "";
+      var meta = esc(r.event) + " #" + r.sequence + " &middot; src " + esc(r.source || "-");
+      rows += '<div class="rec" data-testid="mem-row">' +
+        '<span class="rec-kind">' + esc(r.event) + "</span>" +
+        '<span class="rec-meta">' + meta + "</span>" +
+        '<span class="rec-title' + tension + '">' + esc(title) + "</span></div>";
+    }
+    return rows;
+  }
+
+  function memoryContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var rows = memoryRows(state.records || []);
+    var legend = '<div class="epi-legend" data-testid="mem-legend">Epistemic statuses: ' +
+      '<span class="epi" style="border-color:#bdf0dc;color:#bdf0dc">VERIFIED</span> ' +
+      '<span class="epi" style="border-color:#9ce0ff;color:#9ce0ff">OBSERVED</span> ' +
+      '<span class="epi" style="border-color:#ffd9a0;color:#ffd9a0">INFERRED</span> ' +
+      '<span class="epi" style="border-color:#e3d9ff;color:#e3d9ff">UNCERTAIN</span> ' +
+      '<span class="epi" style="border-color:#ffb3b0;color:#ffb3b0">REJECTED</span> ' +
+      '<span class="epi" style="border-color:#cbd5e1;color:#cbd5e1">STALE</span></div>';
+    var note = (state.contradictions > 0)
+      ? '<div class="banner warn" data-testid="mem-contradiction" role="alert"><strong>' + state.contradictions +
+        " conflicting claim(s)</strong> in memory &mdash; both sides are shown with provenance; the system never silently picks one.</div>"
+      : '<div class="banner ok" role="status">No unresolved contradictions in memory.</div>';
+    return '<section class="panel"><header class="panel-head"><h2>Memory</h2>' +
+      '<span class="recmeta">canonical ledger &middot; read-only</span></header>' +
+      note + legend +
+      '<div class="reclist">' + (rows || "<div class='empty'>no memories</div>") + "</div></section>";
+  }
+
+  // ---- projects ---------------------------------------------------------
+  function projectsContent() {
+    if (!twin) return "<div class='empty'>Loading projects&hellip;</div>";
+    var t = twin.cognitive_twin || {};
+    var st = t.state || {};
+    var proj = (st.active_projects || []).map(function (i) { return itemRow(i, "project-item"); }).join("");
+    var loops = (st.open_loops || []).map(function (i) { return itemRow(i, "project-loop"); }).join("");
+    var cards = '<div class="card"><h3>Active projects</h3><ul>' + (proj || "<li class='empty'>none</li>") + "</ul></div>" +
+      '<div class="card"><h3>Open loops (linked)</h3><ul>' + (loops || "<li class='empty'>none</li>") + "</ul></div>" +
+      '<div class="card"><h3>Decision history</h3><ul>' +
+      ((t.decision_history || []).map(function (i) { return itemRow(i, "project-decision"); }).join("") || "<li class='empty'>none</li>") + "</ul></div>";
+    return '<section class="panel"><header class="panel-head"><h2>Projects</h2>' +
+      '<span class="recmeta">twin-1.0 fold &middot; advisory</span></header>' +
+      '<p class="prov">Projects link back into the memory graph through the canonical Twin projection. Project status is inferred from ledger activity unless VERIFIED.</p>' +
+      '<div class="cardgrid">' + cards + "</div></section>";
+  }
+
+  // ---- open loops -------------------------------------------------------
+  function loopsContent() {
+    if (!twin) return "<div class='empty'>Loading open loops&hellip;</div>";
+    var t = twin.cognitive_twin || {};
+    var st = t.state || {};
+    var loops = (st.open_loops || []).map(function (i) { return itemRow(i, "loop-item"); }).join("");
+    var obs = (t.recent_observations || []).map(function (i) { return itemRow(i, "loop-observation"); }).join("");
+    return '<section class="panel"><header class="panel-head"><h2>Open loops</h2>' +
+      '<span class="recmeta">awaiting resolution &middot; never auto-executed</span></header>' +
+      '<p class="prov">A loop is an open item &mdash; an unresolved decision, task, or follow-up. Inspect its context here; nothing executes merely because a loop exists.</p>' +
+      '<div class="cardgrid">' +
+      '<div class="card"><h3>Open</h3><ul>' + (loops || "<li class='empty'>no open loops</li>") + "</ul></div>" +
+      '<div class="card"><h3>Recent observations</h3><ul>' + (obs || "<li class='empty'>none</li>") + "</ul></div>" +
+      "</div></section>";
+  }
+
+  // ---- governance -------------------------------------------------------
+  function governanceContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var govRows = (state.records || []).filter(function (r) { return r.event === "governance.decided"; })
+      .map(function (r) {
+        var p = r.payload || {};
+        var cls = p.outcome === "approved" ? "st-good" : (p.outcome === "denied" ? "st-bad" : "st-warn");
+        return '<div class="rec" data-testid="gov-row">' +
+          '<span class="rec-kind">' + esc(p.outcome || r.event) + "</span>" +
+          '<span class="rec-meta">governance #' + r.sequence + " &middot; src " + esc(r.source || "-") + "</span>" +
+          '<span class="rec-title">' + esc(p.title || "") + "</span></div>";
+      }).join("");
+    var authority = '<div class="card"><h3>Authority chain</h3><ol class="chain" data-testid="gov-chain">' +
+      "<li>LLM proposes</li><li>Council evaluates</li><li>Governance authorizes</li>" +
+      "<li>Human ratifies</li><li>Kernel executes</li><li>Ledger records</li></ol></div>";
+    return '<section class="panel"><header class="panel-head"><h2>Governance</h2>' +
+      '<span class="recmeta">' + esc(state.counters || "") + "</span></header>" +
+      '<p class="prov"><strong>Memory may inform; it may not authorize.</strong> This UI presents governance state from the server. Ratification and rejection are the only human acts; execution requires a ratified decision and the EXECUTE permission, both enforced server-side.</p>' +
+      authority +
+      '<div class="card"><h3>Governance decisions</h3>' + (govRows || "<div class='empty'>none</div>") + "</div></section>";
+  }
+
+  // ---- evidence ---------------------------------------------------------
+  function evidenceContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var rows = "";
+    var recs = state.records || [];
+    for (var i = recs.length - 1; i >= 0; i--) {
+      var r = recs[i];
+      rows += '<div class="rec" data-testid="evidence-row" data-seq="' + r.sequence + '">' +
+        '<span class="rec-kind">#' + r.sequence + "</span>" +
+        '<span class="rec-meta">' + esc(r.event) + "</span>" +
+        '<span class="rec-title">' + esc((r.payload && r.payload.title) || "") + "</span>" +
+        '<code class="ev-hash" data-testid="evidence-hash">' + esc(r.hash) + "</code></div>";
+    }
+    var ver = state.integrity === "INTACT"
+      ? '<div class="banner ok" role="status">Every record&#39;s hash is chained to the previous (SHA-256 over canonical form). The full chain verifies INTACT.</div>'
+      : '<div class="banner warn" role="alert">Chain broken &mdash; evidence integrity compromised.</div>';
+    return '<section class="panel"><header class="panel-head"><h2>Evidence</h2>' +
+      '<span class="recmeta">"why does Pocket OS believe this?"</span></header>' + ver +
+      '<p class="prov">Each belief carries provenance (ledger#seq), confidence, and its supporting evidence sequences. The chain is recomputable for any record.</p>' +
+      '<div class="reclist">' + rows + "</div></section>";
+  }
+
+  // ---- ledger -----------------------------------------------------------
+  function ledgerContent() {
+    if (!state) return "<div class='empty'>Loading&hellip;</div>";
+    var rows = "";
+    (state.records || []).forEach(function (r) {
+      var chain = r.previous_hash ? '<span class="pill st-good">chained</span>' : '<span class="pill st-warn">genesis</span>';
+      rows += '<div class="rec" data-testid="ledger-row" data-seq="' + r.sequence + '">' +
+        '<span class="rec-kind">#' + r.sequence + "</span>" +
+        '<span class="rec-meta">' + esc(r.event) + " &middot; " + esc(r.source || "-") + "</span>" +
+        '<span class="rec-title">' + esc((r.payload && r.payload.title) || "") + "</span>" + chain +
+        '<code class="ev-hash">prev ' + esc((r.previous_hash || "-").slice(0, 12)) + "</code></div>";
+    });
+    var ver = state.integrity === "INTACT"
+      ? '<div class="banner ok" role="status">Append-only ledger &middot; ' + (state.record_count || state.records.length) + " records &middot; hash chain VERIFIED INTACT.</div>"
+      : '<div class="banner warn" role="alert">Ledger compromised &mdash; verification failed.</div>';
+    return '<section class="panel"><header class="panel-head"><h2>Ledger</h2>' +
+      '<span class="recmeta">append-only &middot; read-only</span></header>' + ver +
+      '<p class="prov">This is the sole authoritative store. The UI cannot edit history; there is no client-side ledger. The Timeline tab reconstructs prior state from these records.</p>' +
+      '<div class="reclist">' + rows + "</div></section>";
+  }
+
   // ------------------------------------------------------------- content dispatch
+  function buildContent() {
+    if (!build) return "<div class='empty'>Loading&hellip;</div>";
+    var caps = build.capabilities || {};
+    var rows = "";
+    Object.keys(caps).forEach(function (key) {
+      var enabled = !!caps[key];
+      rows += '<div class="hrow"><span class="hname">' + esc(key.replace(/_/g, " ")) +
+        '</span><span class="pill ' + (enabled ? "st-good" : "st-warn") + '">' +
+        (enabled ? "ENABLED" : "DISABLED") + "</span></div>";
+    });
+    var ledger = build.ledger || {};
+    return '<section class="panel" data-testid="build-panel"><header class="panel-head"><h2>Build &amp; Upgrade</h2>' +
+      '<span class="pill st-good">' + esc(build.release || "unknown") + '</span></header>' +
+      '<p class="prov">Server-owned release metadata and capability posture. This view is informational; it cannot grant authority or change the ledger.</p>' +
+      '<div class="cardgrid"><div class="card"><h3>Release</h3>' +
+      '<div class="hrow"><span class="hname">Product</span><strong>' + esc(build.product) + '</strong></div>' +
+      '<div class="hrow"><span class="hname">Upgrade</span><strong>' + esc(build.upgrade) + '</strong></div>' +
+      '<div class="hrow"><span class="hname">API contract</span><strong>' + esc(build.api_contract) + '</strong></div>' +
+      '<div class="hrow"><span class="hname">Runtime</span><strong>' + esc(build.runtime) + '</strong></div></div>' +
+      '<div class="card"><h3>Live ledger</h3>' +
+      '<div class="hrow"><span class="hname">Integrity</span><span class="pill ' + (ledger.valid ? "st-good" : "st-bad") + '">' + esc(ledger.integrity) + '</span></div>' +
+      '<div class="hrow"><span class="hname">Records</span><strong>' + esc(ledger.record_count) + '</strong></div>' +
+      '<div class="hrow"><span class="hname">Revision</span><strong>' + esc(ledger.revision) + '</strong></div>' +
+      '<div class="hrow"><span class="hname">Audio</span><span class="pill st-warn">NOT INCLUDED</span></div></div></div>' +
+      '<div class="card"><h3>Capabilities</h3>' + rows + '</div></section>';
+  }
+
   function contentFor(tab) {
     if (tab === "console") return consoleContent();
     if (tab === "timeline") return timelineContent();
@@ -427,6 +665,13 @@
     if (tab === "twin") return twinContent();
     if (tab === "shadow") return shadowContent();
     if (tab === "decisions") return decisionsContent();
+    if (tab === "memory") return memoryContent();
+    if (tab === "projects") return projectsContent();
+    if (tab === "loops") return loopsContent();
+    if (tab === "governance") return governanceContent();
+    if (tab === "evidence") return evidenceContent();
+    if (tab === "ledger") return ledgerContent();
+    if (tab === "build") return buildContent();
     return "<p>Unknown tab</p>";
   }
 
@@ -443,11 +688,42 @@
   // ------------------------------------------------------------- actions
   function decisionAction(action, decisionId) {
     if (!TOKEN) { alert("sign in required"); return; }
-    pocket.command(decisionId, action).then(function () {
+    var url = "/api/decisions/" + encodeURIComponent(decisionId) + "/" + action;
+    if (action === "ratify") {
+      // Ratification requires a council quorum (QUORUM=2 distinct members).
+      // The UI is a control surface: it assembles signatures by requesting each
+      // member to sign (server-side keys) and submits them. Bearer RATIFY
+      // permission alone cannot ratify; the server verifies the quorum.
+      assembleQuorumAndRatify(decisionId);
+      return;
+    }
+    postJSON(url, {}, function (s) {
+      if (s && s.error) { alert("denied: " + (s.error.message || s.error.code)); }
       refreshAll();
-    }).catch(function (e) {
-      alert("denied: " + (e && e.code ? e.code : "unknown"));
-      refreshAll();
+    });
+  }
+
+  // Assemble a council quorum (2 distinct member signatures) then ratify.
+  function assembleQuorumAndRatify(decisionId) {
+    var members = ["council-a", "council-b"];  // QUORUM = 2
+    var sigs = {};
+    var pending = members.length;
+    var failed = false;
+    members.forEach(function (member) {
+      postJSON("/api/decisions/" + encodeURIComponent(decisionId) + "/council-sign?member=" + encodeURIComponent(member),
+        {}, function (s) {
+          pending -= 1;
+          if (failed) { if (pending === 0) refreshAll(); return; }
+          if (!s || !s.ok || !s.signature) { failed = true; alert("council sign failed for " + member); }
+          else { sigs[member] = s.signature; }
+          if (pending === 0 && !failed) {
+            postJSON("/api/decisions/" + encodeURIComponent(decisionId) + "/ratify",
+              { signatures: sigs }, function (r) {
+                if (r && r.error) { alert("ratification denied: " + (r.error.message || r.error.code)); }
+                refreshAll();
+              });
+          }
+        });
     });
   }
 
@@ -467,10 +743,8 @@
       var input = form.querySelector("[name='title']");
       var title = input ? input.value.trim() : "";
       if (!title) return;
-      pocket.propose(title, true).then(function () {
-        refreshAll();
-      }).catch(function (e) {
-        alert("denied: " + (e && e.code ? e.code : "unknown"));
+      postJSON("/api/decisions/propose", { title: title, send_to_council: true }, function (s) {
+        if (s && s.error) alert("denied: " + (s.error.message || ""));
         refreshAll();
       });
     }
@@ -481,8 +755,8 @@
     if (!el) return;
     var action = el.getAttribute("data-action");
     if (action === "logout") { logout(); return; }
-    if (action === "tamper") { pocket.demo.tamper().then(function () { refreshAll(); }).catch(function () {}); return; }
-    if (action === "reset") { pocket.demo.reset().then(function () { refreshAll(); }).catch(function () {}); return; }
+    if (action === "tamper") { postJSON("/api/demo/tamper", {}, function (s) { refreshAll(); }); return; }
+    if (action === "reset") { postJSON("/api/demo/reset", {}, function (s) { refreshAll(); }); return; }
     if (action === "council-approve" || action === "ratify" || action === "reject" || action === "execute") {
       decisionAction(action, el.getAttribute("data-did"));
       return;
@@ -499,12 +773,13 @@
     }
     var seq = el.getAttribute("data-seq");
     if (seq && el.getAttribute("data-testid") === "scrubber-tick") {
-      // Scrub to the chosen sequence via the pocket client. If the chain is
-      // compromised the server refuses and returns a normalized REPLAY_REJECTED
-      // error, which the timeline renders instead of any partial reconstruction.
-      pocket.console.scrub(seq).then(function (s) {
-        scrub = s; render();
-      }).catch(function () {});
+      // Scrub to the chosen sequence via the read endpoint. If the chain is
+      // compromised the server refuses and returns the scrub error, which the
+      // timeline renders instead of any partial reconstruction.
+      fetch("/api/scrub?end=" + encodeURIComponent(seq))
+        .then(function (r) { return r.json(); })
+        .then(function (s) { scrub = s; render(); })
+        .catch(function () {});
       return;
     }
   });

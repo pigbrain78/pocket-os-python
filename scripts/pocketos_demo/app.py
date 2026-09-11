@@ -25,12 +25,13 @@ import hmac
 import json
 import os
 import secrets
+import sys
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -51,11 +52,53 @@ from .engines import (
     ConstitutionalRuntime,
     ExecutionDenied,
     reasoning_hash,
+    STATUS_PENDING,
+    STATUS_COUNCIL,
+    STATUS_AWAITING_RATIFICATION,
+    STATUS_RATIFIED,
+    STATUS_EXECUTED,
 )
+from .engines import council_gate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 STATE_PATH = os.path.join(HERE, "demo_state.json")
+BOOKMARKS_PATH = os.environ.get("POCKETOS_BOOKMARKS_DB", os.path.join(HERE, "replay_bookmarks.json"))
+
+# Build metadata is deliberately static and server-owned. Clients may display
+# these values, but they never negotiate authority or mutate release state.
+BUILD_INFO: dict[str, Any] = {
+    "product": "PocketOS",
+    "release": "pocketos-app-1.1.0",
+    "upgrade": "build-observability",
+    "api_contract": "v2",
+    "runtime": "python-fastapi",
+    "audio": {"enabled": False, "reason": "voice/audio is outside this build"},
+    "capabilities": {
+        "canonical_ledger": True,
+        "ledger_verification": True,
+        "sse_event_spine": True,
+        "server_authoritative_governance": True,
+        "offline_authority": False,
+        "audio": False,
+    },
+}
+
+# The memory subsystem is server-owned. Its SQLite projections and append-only
+# memory ledger are never exposed to clients; clients consume typed projections.
+# Keep the location configurable so production can move this subsystem to the
+# durable store used by the deployment without changing the API contract.
+MEMORY_PACKAGE_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "memory_brain"))
+if MEMORY_PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, MEMORY_PACKAGE_ROOT)
+from memory_brain import MemoryAPI, MemoryBrain  # noqa: E402
+
+MEMORY_DB_PATH = os.environ.get(
+    "POCKETOS_MEMORY_DB",
+    os.path.join(os.path.dirname(STATE_PATH), "memory_brain.sqlite3"),
+)
+MEMORY_BRAIN = MemoryBrain(MEMORY_DB_PATH)
+MEMORY_API = MemoryAPI(brain=MEMORY_BRAIN)
 
 
 # ---------------------------------------------------------------------------
@@ -188,46 +231,37 @@ PERM_ADMIN = "ADMIN"  # demo/test mutators
 _SESSIONS: dict[str, dict[str, Any]] = {}
 _SESSION_LOCK = threading.RLock()
 _SESSION_TTL = 3600  # seconds
-
-# Login rate limiting: per-client-IP failed-attempt tracking with a lockout
-# window. Slows brute force without a third-party dependency.
-_LOGIN_MAX_ATTEMPTS = 5        # failed attempts before lockout
-_LOGIN_WINDOW = 300            # attempts counted within this many seconds
-_LOGIN_LOCKOUT = 300           # lockout seconds after exceeding the max
-_LOGIN_ATTEMPTS: dict[str, list[float]] = {}  # ip -> [attempt timestamps]
-_LOGIN_LOCKOUTS: dict[str, float] = {}        # ip -> lockout-until timestamp
-
-
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_LOCKOUTS: dict[str, float] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW = 300
+_LOGIN_LOCKOUT = 300
+_BOOKMARKS: dict[str, list[dict[str, Any]]] = {}
+_BOOKMARK_AUDIT: dict[str, list[dict[str, Any]]] = {}
+_AUDIT_PREFERENCES: dict[str, dict[str, Any]] = {}
+_BOOKMARK_LOCK = threading.RLock()
 
 
-def _login_allowed(ip: str) -> Optional[float]:
-    """Return None if allowed, else the lockout-until timestamp (seconds)."""
-    now = time.time()
-    with _SESSION_LOCK:
-        # Lockout active?
-        if _LOGIN_LOCKOUTS.get(ip, 0) > now:
-            return _LOGIN_LOCKOUTS[ip]
-        # Prune attempts outside the sliding window.
-        recent = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if t > now - _LOGIN_WINDOW]
-        if len(recent) >= _LOGIN_MAX_ATTEMPTS:
-            _LOGIN_LOCKOUTS[ip] = now + _LOGIN_LOCKOUT
-            _LOGIN_ATTEMPTS[ip] = []
-            return _LOGIN_LOCKOUTS[ip]
-        _LOGIN_ATTEMPTS[ip] = recent
-        return None
+def _load_bookmark_store() -> None:
+    global _BOOKMARKS, _BOOKMARK_AUDIT, _AUDIT_PREFERENCES
+    try:
+        with open(BOOKMARKS_PATH) as fh:
+            data = json.load(fh)
+        _BOOKMARKS = data.get("bookmarks", {}) if isinstance(data, dict) else {}
+        _BOOKMARK_AUDIT = data.get("audit", {}) if isinstance(data, dict) else {}
+        _AUDIT_PREFERENCES = data.get("audit_preferences", {}) if isinstance(data, dict) else {}
+    except Exception:
+        _BOOKMARKS, _BOOKMARK_AUDIT, _AUDIT_PREFERENCES = {}, {}, {}
 
 
-def _login_record_failure(ip: str) -> None:
-    with _SESSION_LOCK:
-        _LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
+def _save_bookmark_store() -> None:
+    temp_path = f"{BOOKMARKS_PATH}.tmp"
+    with open(temp_path, "w") as fh:
+        json.dump({"bookmarks": _BOOKMARKS, "audit": _BOOKMARK_AUDIT, "audit_preferences": _AUDIT_PREFERENCES}, fh)
+    os.replace(temp_path, BOOKMARKS_PATH)
 
 
-def _login_clear(ip: str) -> None:
-    with _SESSION_LOCK:
-        _LOGIN_ATTEMPTS.pop(ip, None)
-        _LOGIN_LOCKOUTS.pop(ip, None)
+_load_bookmark_store()
 
 # Password hashing (stdlib PBKDF2-HMAC-SHA256 — no plaintext stored)
 _PBKDF2_ITERATIONS = 210_000
@@ -340,6 +374,35 @@ def _require_permission(token: Optional[str], perm: str) -> str:
     return sess["subject"]
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_allowed(ip: str) -> Optional[float]:
+    now = time.time()
+    with _SESSION_LOCK:
+        if _LOGIN_LOCKOUTS.get(ip, 0) > now:
+            return _LOGIN_LOCKOUTS[ip]
+        recent = [stamp for stamp in _LOGIN_ATTEMPTS.get(ip, []) if stamp > now - _LOGIN_WINDOW]
+        if len(recent) >= _LOGIN_MAX_ATTEMPTS:
+            _LOGIN_LOCKOUTS[ip] = now + _LOGIN_LOCKOUT
+            _LOGIN_ATTEMPTS[ip] = []
+            return _LOGIN_LOCKOUTS[ip]
+        _LOGIN_ATTEMPTS[ip] = recent
+        return None
+
+
+def _login_record_failure(ip: str) -> None:
+    with _SESSION_LOCK:
+        _LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
+
+
+def _login_clear(ip: str) -> None:
+    with _SESSION_LOCK:
+        _LOGIN_ATTEMPTS.pop(ip, None)
+        _LOGIN_LOCKOUTS.pop(ip, None)
+
+
 def _require_demo(token: Optional[str]) -> str:
     """Demo/test mutators require the ADMIN permission (demo builds only)."""
     return _require_permission(token, PERM_ADMIN)
@@ -369,29 +432,11 @@ _EVENT_LOCK = threading.RLock()
 def _broadcast(record: dict[str, Any]) -> None:
     import asyncio as _aio
 
-    # Canonical live-event envelope. The SAME event must decode into equivalent
-    # semantic fields in every client (web + Swift). It therefore carries the
-    # full per-record provenance, not just type/payload:
-    #   type            -> event_type (decision.proposed, memory.created, ...)
-    #   event_id        -> stable id (the record hash on this demo backend)
-    #   sequence        -> ledger sequence number
-    #   occurred_at     -> authoritative server timestamp (record.timestamp)
-    #   source          -> emitting actor (PocketOS / Governance / ...)
-    #   kind            -> domain class (memory, decision, governance, ...)
-    #   previous_hash   -> predecessor for chain traceability
-    #   schema_version  -> event schema version
-    #   payload         -> event-specific body
-    payload = json.dumps({
-        "type": record.get("event") or "record.append",
-        "event_id": record.get("hash", ""),
-        "sequence": record.get("sequence"),
-        "occurred_at": record.get("timestamp"),
-        "source": record.get("source"),
-        "kind": record.get("kind"),
-        "previous_hash": record.get("previous_hash"),
-        "schema_version": record.get("schema_version", "v2"),
-        "payload": record.get("payload", {}),
-    })
+    payload = json.dumps({"type": record.get("event") or "record.append",
+                          "sequence": record.get("sequence"),
+                          "schema_version": record.get("schema_version", "v2"),
+                          "event_id": record.get("hash", ""),
+                          "payload": record.get("payload", {})})
     with _EVENT_LOCK:
         dead = []
         for sid, q in list(_EVENT_SUBSCRIBERS.items()):
@@ -453,11 +498,57 @@ class LoginBody(BaseModel):
 
 
 class RatifyBody(BaseModel):
-    claimed_authority: str = "NONE"  # ignored
+    claimed_authority: str = "NONE"  # ignored — never authoritative
+    # Council signatures: {member: hmac_signature}. The ledger event is emitted
+    # ONLY when a threshold of distinct members verifies under active keys.
+    signatures: dict[str, str] = {}
 
 
 class ExecuteBody(BaseModel):
     claimed_authority: str = "NONE"  # ignored
+
+
+class MemoryRememberBody(BaseModel):
+    content: str
+    memory_type: Optional[str] = None
+    sensitive: bool = False
+    importance: Optional[float] = None
+
+
+class MemorySearchBody(BaseModel):
+    query: str
+    top_k: int = 10
+    memory_types: Optional[list[str]] = None
+    minimum_confidence: float = 0.0
+
+
+class MemoryReviewBody(BaseModel):
+    decision: str
+
+
+class ShadowProposalBody(BaseModel):
+    text: str
+    shadow_type: str = "RECOMMENDATION"
+    shadow_provenance: str = ""
+    risk: str = "MEDIUM"
+    reversible: bool = True
+    send_to_council: bool = False
+
+
+class ReplayBookmarkBody(BaseModel):
+    end: int
+    label: str = ""
+    device_id: str = "unknown-device"
+    device_name: str = "PocketOS device"
+    platform: str = "unknown"
+    client_updated_at: Optional[str] = None
+
+
+class AuditPreferencesBody(BaseModel):
+    device: str = "ALL"
+    action: str = "ALL"
+    conflict: str = "ALL"
+    sortNewest: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -467,52 +558,35 @@ class ExecuteBody(BaseModel):
 app = FastAPI(title="PocketOS Web Demo")
 
 
-# Normalized error model: every HTTP error carries a stable machine-readable
-# code and (where available) a request_id. Clients never parse human strings.
-_ERROR_BY_STATUS = {
-    400: "VALIDATION_FAILED",
-    401: "AUTHENTICATION_REQUIRED",
-    403: "AUTHORIZATION_DENIED",
-    404: "NOT_FOUND",
-    409: "CONFLICT",
-    422: "VALIDATION_FAILED",
-    429: "RATE_LIMITED",
-}
-
-
-@app.exception_handler(HTTPException)
-def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    rid = request.headers.get("x-request-id") or secrets.token_hex(8)
-    detail = exc.detail
-    code = None
-    if isinstance(detail, dict):
-        code = detail.get("code")
-    if code is None:
-        code = _ERROR_BY_STATUS.get(exc.status_code, "INTERNAL_ERROR")
-    body = {"error": {"code": code, "message": str(detail) if not isinstance(detail, dict) else detail, "request_id": rid}}
-    headers = dict(exc.headers or {})
-    headers["x-request-id"] = rid
-    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
-
-
-@app.exception_handler(RequestValidationError)
-def _validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    rid = request.headers.get("x-request-id") or secrets.token_hex(8)
-    body = {
-        "error": {
-            "code": "VALIDATION_FAILED",
-            "message": "request validation failed",
-            "request_id": rid,
-            "details": exc.errors(),
-        }
-    }
-    return JSONResponse(status_code=422, content=body, headers={"x-request-id": rid})
-
-
 @app.get("/api/health")
 def api_health() -> dict[str, Any]:
     v = _verification_view()
-    return {"status": "healthy", **v, "records": len(STATE), "revision": STATE.revision()}
+    return {
+        "status": "healthy",
+        **v,
+        "records": len(STATE),
+        "revision": STATE.revision(),
+        "release": BUILD_INFO["release"],
+    }
+
+
+@app.get("/api/build")
+def api_build() -> dict[str, Any]:
+    """Return immutable release/capability metadata plus live ledger status.
+
+    This is intentionally a read projection: the browser cannot claim a
+    capability, alter the release, or use this endpoint to bypass governance.
+    """
+    v = _verification_view()
+    return {
+        **BUILD_INFO,
+        "ledger": {
+            "integrity": v["integrity"],
+            "valid": v["valid"],
+            "record_count": len(STATE),
+            "revision": STATE.revision(),
+        },
+    }
 
 
 @app.get("/api/state")
@@ -520,6 +594,7 @@ def api_state() -> dict[str, Any]:
     v = _verification_view()
     return {
         **v,
+        "release": BUILD_INFO["release"],
         "record_count": len(STATE),
         "records": STATE.records(),
         "counters": governance_counters(STATE.records()).render(),
@@ -553,7 +628,77 @@ def api_scrub(end: Optional[int] = None, include_decisions: bool = False) -> dic
         reg = DecisionRegistry()
         reg.rebuild(list(result.events))
         out["decisions"] = [d.view() for d in reg.all()]
+        out["events"] = list(result.events)
     return out
+
+
+@app.get("/api/v1/replay/bookmarks")
+def api_replay_bookmarks(request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_READ)
+    with _BOOKMARK_LOCK:
+        items = list(_BOOKMARKS.get(subject, []))
+    return {"bookmarks": items, "source": "canonical-user-bookmarks", "conflict_policy": "server-last-write-wins-by-client-updated-at"}
+
+
+@app.get("/api/v1/replay/bookmarks/audit")
+def api_replay_bookmark_audit(request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_READ)
+    with _BOOKMARK_LOCK:
+        return {"audit": list(_BOOKMARK_AUDIT.get(subject, [])), "source": "canonical-bookmark-audit"}
+
+
+@app.get("/api/v1/preferences/audit")
+def api_audit_preferences(request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_READ)
+    with _BOOKMARK_LOCK:
+        preferences = _AUDIT_PREFERENCES.get(subject, {"device": "ALL", "action": "ALL", "conflict": "ALL", "sortNewest": True})
+    return {"preferences": preferences, "source": "canonical-user-preferences"}
+
+
+@app.post("/api/v1/preferences/audit")
+def api_audit_preferences_save(body: AuditPreferencesBody, request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_READ)
+    now = datetime.now(timezone.utc).isoformat()
+    preferences = {"device": body.device, "action": body.action, "conflict": body.conflict, "sortNewest": body.sortNewest, "updatedAt": now}
+    with _BOOKMARK_LOCK:
+        _AUDIT_PREFERENCES[subject] = preferences
+        _save_bookmark_store()
+    return {"preferences": preferences, "source": "canonical-user-preferences"}
+
+
+@app.post("/api/v1/replay/bookmarks")
+def api_replay_bookmark_create(body: ReplayBookmarkBody, request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_READ)
+    if body.end < 0 or body.end > len(STATE):
+        raise HTTPException(status_code=422, detail="bookmark sequence is outside the canonical ledger")
+    now = datetime.now(timezone.utc).isoformat()
+    item = {"end": body.end, "label": body.label.strip() or f"Revision {body.end}", "createdAt": now, "updatedAt": now, "deviceId": body.device_id, "deviceName": body.device_name, "platform": body.platform, "conflictVersion": 1}
+    with _BOOKMARK_LOCK:
+        existing = next((entry for entry in _BOOKMARKS.get(subject, []) if entry["end"] == body.end), None)
+        if existing:
+            existing_client_time = existing.get("clientUpdatedAt") or existing.get("updatedAt", "")
+            incoming_client_time = body.client_updated_at or now
+            if incoming_client_time < existing_client_time:
+                _BOOKMARK_AUDIT.setdefault(subject, []).append({"action": "conflict-kept-server", "end": body.end, "at": now, "deviceId": body.device_id, "winnerDeviceId": existing.get("deviceId"), "conflictVersion": existing.get("conflictVersion", 1)})
+                _save_bookmark_store()
+                return {"ok": True, "bookmark": existing, "source": "canonical-user-bookmarks", "conflict": "server-kept-newer-version"}
+            item["conflictVersion"] = int(existing.get("conflictVersion", 1)) + 1
+        item["clientUpdatedAt"] = body.client_updated_at or now
+        current = [entry for entry in _BOOKMARKS.get(subject, []) if entry["end"] != body.end]
+        _BOOKMARKS[subject] = [item, *current][:24]
+        _BOOKMARK_AUDIT.setdefault(subject, []).append({"action": "created" if not existing else "conflict-replaced", "end": body.end, "at": now, "deviceId": body.device_id, "winnerDeviceId": item.get("deviceId"), "conflictVersion": item.get("conflictVersion", 1)})
+        _save_bookmark_store()
+    return {"ok": True, "bookmark": item, "source": "canonical-user-bookmarks", "conflict": "replaced-older-version" if existing else None}
+
+
+@app.delete("/api/v1/replay/bookmarks/{end}")
+def api_replay_bookmark_delete(end: int, request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_READ)
+    with _BOOKMARK_LOCK:
+        _BOOKMARKS[subject] = [entry for entry in _BOOKMARKS.get(subject, []) if entry["end"] != end]
+        _BOOKMARK_AUDIT.setdefault(subject, []).append({"action": "deleted", "end": end, "at": datetime.now(timezone.utc).isoformat()})
+        _save_bookmark_store()
+    return {"ok": True, "source": "canonical-user-bookmarks"}
 
 
 # ---- twin / shadow / decisions -------------------------------------------
@@ -570,10 +715,157 @@ def api_shadow() -> dict[str, Any]:
     return {**_projection_base(), "ai_shadow": shadow_state(STATE.records())}
 
 
+@app.get("/api/v1/projects")
+def api_projects() -> dict[str, Any]:
+    twin = cognitive_state(STATE.records()).view()
+    return {**_projection_base(), "projects": twin["state"]["active_projects"], "source": "canonical-cognitive-projection"}
+
+
+@app.get("/api/v1/open-loops")
+def api_open_loops() -> dict[str, Any]:
+    twin = cognitive_state(STATE.records()).view()
+    return {**_projection_base(), "open_loops": twin["state"]["open_loops"], "source": "canonical-cognitive-projection"}
+
+
 @app.get("/api/decisions")
 def api_decisions() -> dict[str, Any]:
     _sync_decision_state()
     return {**_projection_base(), "decisions": [d.view() for d in _DECISION_REGISTRY.all()]}
+
+
+def _decision_records(decision_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "sequence": record.get("sequence"),
+            "event": record.get("event"),
+            "source": record.get("source"),
+            "hash": record.get("hash"),
+            "payload": record.get("payload", {}),
+        }
+        for record in STATE.records()
+        if (record.get("payload") or {}).get("decision_id") == decision_id
+    ]
+
+
+@app.get("/api/v1/decisions/{decision_id}/evidence")
+def api_decision_evidence(decision_id: str) -> dict[str, Any]:
+    _sync_decision_state()
+    if _DECISION_REGISTRY.get(decision_id) is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    return {**_projection_base(), "decision_id": decision_id, "evidence": _decision_records(decision_id), "source": "canonical-ledger"}
+
+
+@app.get("/api/v1/decisions/{decision_id}/ledger")
+def api_decision_ledger(decision_id: str) -> dict[str, Any]:
+    _sync_decision_state()
+    if _DECISION_REGISTRY.get(decision_id) is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    return {**_projection_base(), "decision_id": decision_id, "ledger": _decision_records(decision_id), "source": "canonical-ledger"}
+
+
+@app.post("/api/v1/shadow/propose")
+def api_shadow_propose(body: ShadowProposalBody, request: Request) -> dict[str, Any]:
+    """Convert an advisory Shadow item into an ordinary governed proposal.
+
+    Shadow authority is explicitly recorded as NONE. This endpoint never
+    approves, ratifies, grants capability, or executes the proposed action.
+    """
+    subject = _require_permission(_bearer(request), PERM_PROPOSE)
+    if not body.text.strip():
+        raise HTTPException(status_code=422, detail="text is required")
+    decision_id = f"D-{reasoning_hash(body.text).upper()}"
+    STATE.append("decision.proposed", subject, {
+        "title": body.text.strip(),
+        "decision_id": decision_id,
+        "risk": body.risk,
+        "reversible": body.reversible,
+        "send_to_council": body.send_to_council,
+        "source": "AI Shadow",
+        "shadow_type": body.shadow_type,
+        "shadow_provenance": body.shadow_provenance,
+        "shadow_authority": "NONE",
+    })
+    _broadcast(STATE.records()[-1])
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    return {**_projection_base(), "ok": True, "decision": decision.view() if decision else None, "source": "governed-proposal"}
+
+
+# ---- memory / second-brain projections ------------------------------------
+
+
+@app.post("/api/v1/memory/remember")
+def api_memory_remember(body: MemoryRememberBody, request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_PROPOSE)
+    if not body.content.strip():
+        raise HTTPException(status_code=422, detail="content is required")
+    try:
+        result = MEMORY_API.remember(
+            body.content.strip(),
+            memory_type=body.memory_type,
+            importance=body.importance,
+            actor=subject,
+            sensitive=body.sensitive,
+            is_llm=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "memory": result, "source": "canonical-memory-brain"}
+
+
+@app.post("/api/v1/memory/search")
+def api_memory_search(body: MemorySearchBody) -> dict[str, Any]:
+    if not body.query.strip():
+        raise HTTPException(status_code=422, detail="query is required")
+    results = MEMORY_API.search(
+        body.query.strip(),
+        top_k=body.top_k,
+        memory_types=body.memory_types,
+        minimum_confidence=body.minimum_confidence,
+    )
+    return {"results": results, "source": "canonical-memory-brain"}
+
+
+@app.get("/api/v1/memory/contradictions")
+def api_memory_contradictions() -> dict[str, Any]:
+    return {"contradictions": MEMORY_API.contradictions(), "source": "canonical-memory-brain"}
+
+
+@app.get("/api/v1/memory/health")
+def api_memory_health() -> dict[str, Any]:
+    return {"health": MEMORY_API.health(), "source": "canonical-memory-brain"}
+
+
+@app.get("/api/v1/memory/{memory_id}")
+def api_memory_detail(memory_id: str) -> dict[str, Any]:
+    detail = MEMORY_API.explain(memory_id)
+    if detail.get("memory") is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return {**detail, "source": "canonical-memory-brain"}
+
+
+@app.get("/api/v1/memory/{memory_id}/provenance")
+def api_memory_provenance(memory_id: str) -> dict[str, Any]:
+    detail = MEMORY_API.explain(memory_id)
+    if detail.get("memory") is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return {"memory_id": memory_id, "provenance": detail["provenance"], "history": detail["history"]}
+
+
+@app.get("/api/v1/memory/review/pending")
+def api_memory_review_pending(request: Request) -> dict[str, Any]:
+    _require_permission(_bearer(request), PERM_RATIFY)
+    return {"items": MEMORY_API.review_pending(), "source": "canonical-memory-brain"}
+
+
+@app.post("/api/v1/memory/review/{item_id}/decide")
+def api_memory_review_decide(item_id: str, body: MemoryReviewBody, request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_RATIFY)
+    try:
+        result = MEMORY_API.review_decide(item_id, body.decision, subject)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "review": result, "source": "canonical-memory-brain"}
 
 
 # ---- sessions -------------------------------------------------------------
@@ -582,14 +874,8 @@ def api_decisions() -> dict[str, Any]:
 @app.post("/api/login")
 def api_login(body: LoginBody, request: Request) -> dict[str, Any]:
     ip = _client_ip(request)
-    lockout_until = _login_allowed(ip)
-    if lockout_until is not None:
-        retry_after = max(1, int(lockout_until - time.time()))
-        raise HTTPException(
-            status_code=429,
-            detail=f"too many login attempts; try again in {retry_after}s",
-            headers={"Retry-After": str(retry_after)},
-        )
+    if _login_allowed(ip) is not None:
+        raise HTTPException(status_code=429, detail="too many login attempts")
     username = body.username
     user = USERS.get(username)
     # Verify against the stored PBKDF2 hash. Unknown user still runs a verify
@@ -657,16 +943,51 @@ def api_decisions_council_approve(decision_id: str, request: Request) -> dict[st
     decision = _DECISION_REGISTRY.get(decision_id)
     if decision is None:
         raise HTTPException(status_code=404, detail="unknown decision")
+    if decision.rejected:
+        raise HTTPException(status_code=409, detail="decision was rejected")
+    if decision.status == STATUS_AWAITING_RATIFICATION:
+        return {**_projection_base(), "ok": True, "decision": decision.view(), "idempotent": True}
+    if decision.status not in {STATUS_PENDING, STATUS_COUNCIL}:
+        raise HTTPException(status_code=409, detail="decision must be pending or in COUNCIL stage before approval")
     STATE.append("decision.council_approved", "Council", {"decision_id": decision_id, "council": "APPROVED"})
     _broadcast(STATE.records()[-1])
     _sync_decision_state()
     return {**_projection_base(), "ok": True, "decision": _DECISION_REGISTRY.get(decision_id).view()}
 
 
+@app.post("/api/decisions/{decision_id}/council-sign")
+def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, Any]:
+    """Request a council member signature over a decision (demo assembly of a
+    quorum). Requires COUNCIL permission. Keys never leave the server; returns
+    the HMAC signature for the named member so a session can assemble a
+    threshold. Production members would sign off-box and submit signatures only.
+    """
+    _require_permission(_bearer(request), PERM_COUNCIL)
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    if decision.status != STATUS_AWAITING_RATIFICATION:
+        raise HTTPException(status_code=409, detail="decision must be council-approved before signing")
+    # In production (demo signing off) the signing keys are not in this process
+    # and are never reachable over HTTP. Members sign off-box.
+    if not council_gate.signing_enabled():
+        raise HTTPException(status_code=403,
+                            detail="council signing is disabled in this mode; members sign off-box")
+    member = request.query_params.get("member", "")
+    sig = council_gate.sign_for_member(member, decision_id, council_gate.RATIFIED_STATE)
+    if sig is None:
+        raise HTTPException(status_code=400, detail=f"unknown council member: {member}")
+    return {**_projection_base(), "ok": True, "member": member, "signature": sig,
+            "state": council_gate.RATIFIED_STATE, "decision_id": decision_id}
+
+
 @app.post("/api/decisions/{decision_id}/ratify")
 def api_decisions_ratify(decision_id: str, request: Request, body: RatifyBody | None = None) -> dict[str, Any]:
-    # Ratification is explicit HUMAN action recorded as an event, requiring the
-    # RATIFY permission. claimed_authority is ignored.
+    # Bearer RATIFY permission is NECESSARY but INSUFFICIENT: it permits a
+    # session to REQUEST ratification. Authority to ratify comes ONLY from a
+    # threshold of distinct council members whose signatures verify under their
+    # active keys. client claimed_authority is ignored.
     _require_permission(_bearer(request), PERM_RATIFY)
     _sync_decision_state()
     decision = _DECISION_REGISTRY.get(decision_id)
@@ -674,7 +995,57 @@ def api_decisions_ratify(decision_id: str, request: Request, body: RatifyBody | 
         raise HTTPException(status_code=404, detail="unknown decision")
     if decision.rejected:
         raise HTTPException(status_code=409, detail="decision was rejected")
-    STATE.append("decision.ratified", "Human", {"decision_id": decision_id, "authority": "HUMAN"})
+    if decision.human_ratified:
+        raise HTTPException(status_code=409, detail="decision already ratified")
+
+    # Require the decision to be past council (AWAITING_RATIFICATION) so the
+    # council signatures are ratifying a decision the council has already seen.
+    if decision.status != STATUS_AWAITING_RATIFICATION:
+        raise HTTPException(
+            status_code=409,
+            detail="decision must be council-approved (AWAITING_RATIFICATION) before ratification",
+        )
+
+    sigs = (body.signatures if body else {}) or {}
+    state = council_gate.RATIFIED_STATE
+    if not council_gate.verify_quorum(decision_id, state, sigs):
+        detail = council_gate.validate_signatures(decision_id, state, sigs)
+        return {
+            **_projection_base(), "ok": False,
+            "error": {
+                "code": "COUNCIL_QUORUM_NOT_MET",
+                "message": "ratification requires a quorum of distinct council signatures",
+                "decision_id": decision_id,
+                "diagnostics": detail,
+            },
+        }
+
+    # Seal the verified ratification as a hash-chained block (GENESIS-anchored),
+    # chained to every previously-sealed council ratification.
+    prior_blocks = council_gate.blocks_from_records(STATE.records())
+    block = council_gate.seal_ratification(decision_id, state, sigs, prior_blocks)
+    if block is None:
+        return {
+            **_projection_base(), "ok": False,
+            "error": {
+                "code": "COUNCIL_QUORUM_NOT_MET",
+                "message": "ratification failed to seal a council block",
+                "decision_id": decision_id,
+            },
+        }
+
+    # Authoritative ledger event — emitted ONLY after verified council quorum,
+    # and it carries the sealed hash-chained block as its cryptographic proof.
+    # Execution authority is re-derived from the council chain (verify_ledger),
+    # never from the mere presence of a `decision.ratified` event.
+    STATE.append("decision.ratified", "Council", {
+        "decision_id": decision_id,
+        "state": state,
+        "ratifiers": sorted(sigs.keys()),
+        "authority": "COUNCIL_QUORUM",
+        "claimed_authority_ignored": (body.claimed_authority if body else "NONE"),
+        "block": block,
+    })
     _broadcast(STATE.records()[-1])
     _sync_decision_state()
     return {**_projection_base(), "ok": True, "decision": _DECISION_REGISTRY.get(decision_id).view()}
@@ -687,6 +1058,10 @@ def api_decisions_reject(decision_id: str, request: Request, body: RatifyBody | 
     decision = _DECISION_REGISTRY.get(decision_id)
     if decision is None:
         raise HTTPException(status_code=404, detail="unknown decision")
+    if decision.human_ratified or decision.status in {STATUS_RATIFIED, STATUS_EXECUTED}:
+        raise HTTPException(status_code=409, detail="ratified or executed decisions cannot be rejected")
+    if decision.rejected:
+        return {**_projection_base(), "ok": True, "decision": decision.view(), "idempotent": True}
     STATE.append("decision.rejected", "Human", {"decision_id": decision_id, "authority": "HUMAN", "reason": "human rejected"})
     _broadcast(STATE.records()[-1])
     _sync_decision_state()
@@ -782,6 +1157,59 @@ def api_demo_tamper(request: Request) -> dict[str, Any]:
     return {**v, "broken_seq": v["broken_seq"]}
 
 
+@app.post("/api/demo/tamper-ratification")
+def api_demo_tamper_ratification(request: Request) -> dict[str, Any]:
+    """Demo-only: corrupt the newest sealed council block embedded in a
+    `decision.ratified` event, then RE-HASH the outer state chain so the state
+    ledger itself stays INTACT.
+
+    This simulates the strongest attacker the gate must stop: one who can write
+    STATE directly and recompute hashes (so the outer chain looks fine), but
+    who cannot produce a valid chained council block. Execution authority must
+    still fail closed because verify_ledger on the reconstructed council chain
+    returns False.
+    """
+    _require_demo(_bearer(request))
+    records = STATE.records()
+    target = None
+    for i in range(len(records) - 1, -1, -1):
+        payload = records[i].get("payload") or {}
+        if (records[i].get("event") or "") == "decision.ratified" and isinstance(payload.get("block"), dict):
+            target = i
+            break
+    if target is None:
+        raise HTTPException(status_code=400, detail="no council-ratified block to tamper")
+
+    # Corrupt the embedded council block's integrity seal.
+    records[target]["payload"] = dict(records[target]["payload"])
+    records[target]["payload"]["block"] = dict(records[target]["payload"]["block"])
+    records[target]["payload"]["block"]["hash"] = "0" * 64
+
+    # Re-hash THIS record and every subsequent record so the OUTER state chain
+    # remains intact. This isolates the failure to the council block chain.
+    from .engines.ledger import hash_record as _hr
+    prev = records[target - 1]["hash"] if target > 0 else None
+    for i in range(target, len(records)):
+        records[i]["previous_hash"] = prev
+        records[i]["hash"] = _hr(records[i])
+        prev = records[i]["hash"]
+
+    with open(STATE_PATH, "w") as fh:
+        json.dump(records, fh)
+    STATE._records = records
+    STATE._revision += 1
+    _sync_decision_state()
+    v = _verification_view()
+    # Outer chain intact; council chain must be broken.
+    council_blocks = council_gate.blocks_from_records(records)
+    return {
+        **v,
+        "outer_chain_intact": v["valid"],
+        "council_chain_intact": council_gate.chain_intact(council_blocks),
+        "tampered_seq": target + 1,
+    }
+
+
 @app.post("/api/test/seed-legacy")
 def api_seed_legacy(body: SeedLegacyBody, request: Request) -> dict[str, Any]:
     _require_demo(_bearer(request))
@@ -792,249 +1220,36 @@ def api_seed_legacy(body: SeedLegacyBody, request: Request) -> dict[str, Any]:
     return {**_projection_base(), "ok": True, "record_count": len(STATE)}
 
 
+# ---- versioned client surface ----------------------------------------------
+# The web console keeps its original /api/* routes. Mobile and future clients
+# use this thin alias surface so the contract has an explicit version without
+# duplicating any authority, storage, or ledger logic.
+for _path, _endpoint, _methods in (
+    ("/api/v1/health", api_health, ["GET"]),
+    ("/api/v1/build", api_build, ["GET"]),
+    ("/api/v1/state", api_state, ["GET"]),
+    ("/api/v1/scrub", api_scrub, ["GET"]),
+    ("/api/v1/replay/bookmarks", api_replay_bookmarks, ["GET"]),
+    ("/api/v1/replay/bookmarks", api_replay_bookmark_create, ["POST"]),
+    ("/api/v1/replay/bookmarks/{end}", api_replay_bookmark_delete, ["DELETE"]),
+    ("/api/v1/twin", api_twin, ["GET"]),
+    ("/api/v1/shadow", api_shadow, ["GET"]),
+    ("/api/v1/decisions", api_decisions, ["GET"]),
+    ("/api/v1/login", api_login, ["POST"]),
+    ("/api/v1/session/me", api_session_me, ["GET"]),
+    ("/api/v1/logout", api_logout, ["POST"]),
+    ("/api/v1/decisions/propose", api_decisions_propose, ["POST"]),
+    ("/api/v1/decisions/{decision_id}/council-approve", api_decisions_council_approve, ["POST"]),
+    ("/api/v1/decisions/{decision_id}/council-sign", api_decisions_council_sign, ["POST"]),
+    ("/api/v1/decisions/{decision_id}/ratify", api_decisions_ratify, ["POST"]),
+    ("/api/v1/decisions/{decision_id}/reject", api_decisions_reject, ["POST"]),
+    ("/api/v1/decisions/{decision_id}/execute", api_decisions_execute, ["POST"]),
+    ("/api/v1/stream", api_stream, ["GET"]),
+):
+    app.add_api_route(_path, _endpoint, methods=_methods, include_in_schema=True)
+
+
 # ---- static ----------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Versioned client API (/api/v1)
-#
-# A stable, domain-oriented, platform-neutral contract that the web UI and the
-# future iPhone client both consume. Only this layer knows the wire paths; the
-# pocket client in the frontend exposes domain methods over these routes.
-# Response shapes are normalized (schema_version + request_id + stable ids) so
-# clients never parse human strings. Authoritative mutation is unchanged: every
-# command still flows through the governance/constitutional path — these routes
-# never grant a client authority it lacks.
-# ---------------------------------------------------------------------------
-API_VERSION = "1"
-_CONTEXT: dict[str, Any] = {"request_id": None}
-
-
-def _rid() -> str:
-    return secrets.token_hex(8)
-
-
-def _verification_view_v1() -> dict[str, Any]:
-    v = _verification_view()
-    return {
-        "integrity": v["integrity"],
-        "valid": v["valid"],
-        "broken_seq": v["broken_seq"],
-    }
-
-
-def _ctx_v1(request: Request, v: dict[str, Any]) -> dict[str, Any]:
-    rid = _rid()
-    return {
-        "request_id": rid,
-        "api_version": API_VERSION,
-        "schema_version": "v2",
-        **v,
-    }
-
-
-@app.get("/api/v1/openapi.json")
-def v1_openapi(request: Request) -> JSONResponse:
-    """Machine-readable OpenAPI schema for the canonical /api/v1 contract.
-
-    Served so the future iPhone client can generate its transport from one
-    authoritative document. The schema is produced from the live app routes,
-    so it never drifts from the running contract.
-    """
-    schema = app.openapi()
-    return JSONResponse(schema)
-
-
-@app.get("/api/v1/status")
-def v1_status(request: Request) -> dict[str, Any]:
-    return _ctx_v1(request, {
-        "status": "healthy",
-        "ledger": _verification_view_v1(),
-        "records": len(STATE),
-        "revision": STATE.revision(),
-        "server_time": int(time.time()),
-    })
-
-
-@app.get("/api/v1/memory")
-def v1_memory(request: Request) -> dict[str, Any]:
-    _sync_decision_state()
-    recs = STATE.records()
-    memories = [r for r in recs if (r.get("event") or "").startswith("memory.")]
-    items = [{
-        "id": str(r["sequence"]),
-        "sequence": r["sequence"],
-        "event": r.get("event"),
-        "kind": r.get("kind"),
-        "payload": r.get("payload", {}),
-        "hash": r.get("hash"),
-        "provenance": "ledger#" + str(r["sequence"]),
-    } for r in memories]
-    return _ctx_v1(request, {"items": items, "count": len(items)})
-
-
-@app.get("/api/v1/memory/{sequence}")
-def v1_memory_get(sequence: int, request: Request) -> dict[str, Any]:
-    for r in STATE.records():
-        if r["sequence"] == sequence:
-            return _ctx_v1(request, {"item": {
-                "id": str(r["sequence"]), "sequence": r["sequence"],
-                "event": r.get("event"), "kind": r.get("kind"),
-                "payload": r.get("payload", {}), "hash": r.get("hash"),
-                "provenance": "ledger#" + str(r["sequence"]),
-            }})
-    raise HTTPException(status_code=404, detail={"code": "NOT_FOUND"})
-
-
-@app.get("/api/v1/cognitive-twin")
-def v1_cognitive_twin(request: Request) -> dict[str, Any]:
-    cs = cognitive_state(STATE.records())
-    view = cs.view()
-    # Preserve epistemic status explicitly — never collapse to a boolean.
-    return _ctx_v1(request, {"cognitive_twin": view, "model_version": view.get("model_version", "twin-1.0")})
-
-
-@app.get("/api/v1/ai-shadow")
-def v1_ai_shadow(request: Request) -> dict[str, Any]:
-    return _ctx_v1(request, {"ai_shadow": shadow_state(STATE.records())})
-
-
-@app.get("/api/v1/decisions")
-def v1_decisions(request: Request) -> dict[str, Any]:
-    _sync_decision_state()
-    return _ctx_v1(request, {"items": [d.view() for d in _DECISION_REGISTRY.all()]})
-
-
-@app.get("/api/v1/decisions/{decision_id}")
-def v1_decisions_get(decision_id: str, request: Request) -> dict[str, Any]:
-    _sync_decision_state()
-    d = _DECISION_REGISTRY.get(decision_id)
-    if d is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "decision_id": decision_id})
-    return _ctx_v1(request, {"item": d.view()})
-
-
-@app.get("/api/v1/ledger")
-def v1_ledger(request: Request) -> dict[str, Any]:
-    return _ctx_v1(request, {
-        "ledger": _verification_view_v1(),
-        "genesis_sequence": 1,
-        "head_sequence": len(STATE),
-        "records": len(STATE),
-        "events": STATE.records(),
-    })
-
-
-@app.get("/api/v1/ledger/events/{sequence}")
-def v1_ledger_event(sequence: int, request: Request) -> dict[str, Any]:
-    for r in STATE.records():
-        if r["sequence"] == sequence:
-            return _ctx_v1(request, {"event": r})
-    raise HTTPException(status_code=404, detail={"code": "NOT_FOUND"})
-
-
-@app.get("/api/v1/replay/status")
-def v1_replay_status(request: Request) -> dict[str, Any]:
-    return _ctx_v1(request, {
-        "ledger": _verification_view_v1(),
-        "head_sequence": len(STATE),
-        "events": len(STATE),
-        "refuses_when_compromised": True,
-    })
-
-
-@app.get("/api/v1/replay/inspect")
-def v1_replay_inspect(end: Optional[int] = None, include_decisions: bool = False,
-                      request: Request = None) -> dict[str, Any]:
-    scrubber = Scrubber(STATE)
-    try:
-        result = scrubber.scrub(end_seq=end)
-    except ScrubberError as exc:
-        return _ctx_v1(request, {
-            "ok": False,
-            "error": {"code": "REPLAY_REJECTED", "message": str(exc), "broken_seq": exc.broken_seq},
-        })
-    out: dict[str, Any] = {
-        "ok": True,
-        "provenance": result.provenance_line(),
-        "start_seq": result.start_seq,
-        "end_seq": result.end_seq,
-        "event_count": result.event_count,
-        "state": result.state,
-    }
-    if include_decisions:
-        reg = DecisionRegistry()
-        reg.rebuild(list(result.events))
-        out["decisions"] = [d.view() for d in reg.all()]
-    return _ctx_v1(request, out)
-
-
-@app.get("/api/v1/evidence/verification")
-def v1_evidence_verification(request: Request) -> dict[str, Any]:
-    return _ctx_v1(request, {
-        "ledger": _verification_view_v1(),
-        "signature_status": "signed" if _verification_view()["valid"] else "invalid",
-        "evidence_integrity": "verified" if _verification_view()["valid"] else "compromised",
-    })
-
-
-@app.post("/api/v1/decisions/propose")
-def v1_decisions_propose(body: ProposalBody, request: Request) -> dict[str, Any]:
-    _sync_decision_state()
-    return _decisions_mutate("propose", body, request)
-
-
-@app.post("/api/v1/decisions/{decision_id}/ratify")
-def v1_decisions_ratify(decision_id: str, body: RatifyBody, request: Request) -> dict[str, Any]:
-    _sync_decision_state()
-    return _decisions_mutate("ratify", None, request, decision_id=decision_id)
-
-
-@app.post("/api/v1/decisions/{decision_id}/reject")
-def v1_decisions_reject(decision_id: str, body: RatifyBody, request: Request) -> dict[str, Any]:
-    _sync_decision_state()
-    return _decisions_mutate("reject", None, request, decision_id=decision_id)
-
-
-def _decisions_mutate(action: str, body: Optional[ProposalBody], request: Request,
-                      decision_id: Optional[str] = None) -> dict[str, Any]:
-    """Shared command gate for the v1 decision routes. A command is NOT
-    execution — it records a proposal or a human ratification/rejection event
-    through the canonical append path, exactly like the legacy routes. The
-    registry is then rebuilt from the ledger so the UI/iPhone reflect truth.
-    """
-    token = _bearer(request)
-    if action == "propose":
-        _require_permission(token, PERM_PROPOSE)
-        if not body or not (body.title or "").strip():
-            raise HTTPException(status_code=422, detail={"code": "VALIDATION_FAILED", "message": "title is required"})
-        title = body.title.strip()
-        did = (body.decision_id or "").strip() or f"D-{reasoning_hash(title).upper()}"
-        STATE.append("decision.proposed", "WebClient", {
-            "title": title, "decision_id": did, "risk": body.risk,
-            "reversible": body.reversible, "send_to_council": body.send_to_council,
-        })
-        _broadcast(STATE.records()[-1])
-        _sync_decision_state()
-        d = _DECISION_REGISTRY.get(did)
-        return _ctx_v1(request, {"ok": True, "decision": d.view() if d else None})
-    # ratify / reject
-    _require_permission(token, PERM_RATIFY)
-    if decision_id is None:
-        raise HTTPException(status_code=422, detail={"code": "VALIDATION_FAILED"})
-    _sync_decision_state()
-    d = _DECISION_REGISTRY.get(decision_id)
-    if d is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "decision_id": decision_id})
-    if action == "ratify":
-        if d.rejected:
-            raise HTTPException(status_code=409, detail={"code": "CONFLICT", "message": "decision was rejected"})
-        STATE.append("decision.ratified", "Human", {"decision_id": decision_id, "authority": "HUMAN"})
-    else:
-        STATE.append("decision.rejected", "Human", {"decision_id": decision_id, "authority": "HUMAN", "reason": "human rejected"})
-    _broadcast(STATE.records()[-1])
-    _sync_decision_state()
-    return _ctx_v1(request, {"ok": True, "decision": _DECISION_REGISTRY.get(decision_id).view()})
 
 
 @app.get("/")
