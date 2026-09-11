@@ -1,8 +1,11 @@
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent / "pocketos_src"
 sys.path.insert(0, str(ROOT))
+os.environ.setdefault("POCKETOS_COUNCIL_DEMO_SIGNING", "1")
+os.environ.setdefault("POCKETOS_PRODUCTION_SIGNING_ENABLED", "0")
 
 from fastapi.testclient import TestClient
 from scripts.pocketos_demo.app import app

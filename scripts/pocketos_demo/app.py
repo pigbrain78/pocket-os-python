@@ -992,7 +992,7 @@ def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, 
                 "state": council_gate.RATIFIED_STATE, "decision_id": decision_id, "signer": "console"}
     if not council_gate.signing_enabled():
         raise HTTPException(status_code=403,
-                            detail="Console Signer is unavailable; council members must sign off-box")
+                            detail="production signing is disabled or Console Signer is unavailable")
     sig = council_gate.sign_for_member(member, decision_id, council_gate.RATIFIED_STATE)
     if sig is None:
         raise HTTPException(status_code=400, detail=f"unknown council member: {member}")

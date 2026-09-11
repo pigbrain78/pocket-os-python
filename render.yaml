@@ -10,3 +10,5 @@ services:
     envVars:
       - key: POCKETOS_COUNCIL_DEMO_SIGNING
         value: "0"
+      - key: POCKETOS_PRODUCTION_SIGNING_ENABLED
+        value: "0"

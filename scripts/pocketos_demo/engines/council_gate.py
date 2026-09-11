@@ -49,7 +49,8 @@ from . import council_ratification as council
 # This module is bundled with the local PocketOS demo. Keep the demo flow
 # usable out of the box, while allowing production deployments to disable the
 # in-process signer explicitly.
-_DEMO_SIGNING = os.environ.get("POCKETOS_COUNCIL_DEMO_SIGNING", "1") == "1"
+_DEMO_SIGNING = os.environ.get("POCKETOS_COUNCIL_DEMO_SIGNING", "0") == "1"
+_PRODUCTION_SIGNING_ENABLED = os.environ.get("POCKETOS_PRODUCTION_SIGNING_ENABLED", "0") == "1"
 _CONSOLE_SIGNER_URL = os.environ.get("POCKETOS_CONSOLE_SIGNER_URL", "").strip().rstrip("/")
 _CONSOLE_SIGNER_TOKEN = os.environ.get("POCKETOS_CONSOLE_SIGNER_TOKEN", "").strip()
 
@@ -103,11 +104,16 @@ def console_signer_configured() -> bool:
     return bool(_CONSOLE_SIGNER_URL and _CONSOLE_SIGNER_TOKEN)
 
 
+def production_signing_enabled() -> bool:
+    return _PRODUCTION_SIGNING_ENABLED
+
+
 def console_signer_status() -> dict[str, Any]:
     return {
         "configured": console_signer_configured(),
         "mode": "console-signer" if console_signer_configured() else ("demo" if _DEMO_SIGNING else "off-box-unconfigured"),
         "private_keys_in_pocketos": False,
+        "production_signing_enabled": production_signing_enabled(),
     }
 
 
@@ -117,7 +123,7 @@ def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[str
     PocketOS never receives or stores signing keys. Any missing configuration,
     transport failure, malformed response, or signer error fails closed.
     """
-    if not console_signer_configured():
+    if not production_signing_enabled() or not console_signer_configured():
         return None
     payload = json.dumps({"member": member, "decision_id": candidate_id, "state": state}).encode()
     request = urllib.request.Request(
