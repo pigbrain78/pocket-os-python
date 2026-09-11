@@ -561,9 +561,11 @@ _cors_origins = [origin.strip() for origin in os.environ.get(
     "POCKETOS_CORS_ORIGINS",
     "https://8081-ifn5nx1y0robf8dqdk5bp-f24c55de.us1.manus.computer,http://localhost:8081,http://127.0.0.1:8081",
 ).split(",") if origin.strip()]
+_cors_origin_regex = os.environ.get("POCKETOS_CORS_ORIGIN_REGEX", r"https://.*\.manus\.computer")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
@@ -981,17 +983,26 @@ def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, 
         raise HTTPException(status_code=404, detail="unknown decision")
     if decision.status != STATUS_AWAITING_RATIFICATION:
         raise HTTPException(status_code=409, detail="decision must be council-approved before signing")
-    # In production (demo signing off) the signing keys are not in this process
-    # and are never reachable over HTTP. Members sign off-box.
+    # Production signatures come from the off-box Console Signer. PocketOS
+    # never loads or exposes private signing keys.
+    member = request.query_params.get("member", "")
+    sig = council_gate.sign_via_console(member, decision_id, council_gate.RATIFIED_STATE)
+    if sig is not None:
+        return {**_projection_base(), "ok": True, "member": member, "signature": sig,
+                "state": council_gate.RATIFIED_STATE, "decision_id": decision_id, "signer": "console"}
     if not council_gate.signing_enabled():
         raise HTTPException(status_code=403,
-                            detail="council signing is disabled in this mode; members sign off-box")
-    member = request.query_params.get("member", "")
+                            detail="Console Signer is unavailable; council members must sign off-box")
     sig = council_gate.sign_for_member(member, decision_id, council_gate.RATIFIED_STATE)
     if sig is None:
         raise HTTPException(status_code=400, detail=f"unknown council member: {member}")
     return {**_projection_base(), "ok": True, "member": member, "signature": sig,
             "state": council_gate.RATIFIED_STATE, "decision_id": decision_id}
+
+
+@app.get("/api/signer/status")
+def api_signer_status() -> dict[str, Any]:
+    return {"signer": council_gate.console_signer_status()}
 
 
 @app.post("/api/decisions/{decision_id}/ratify")
@@ -1238,6 +1249,7 @@ def api_seed_legacy(body: SeedLegacyBody, request: Request) -> dict[str, Any]:
 # duplicating any authority, storage, or ledger logic.
 for _path, _endpoint, _methods in (
     ("/api/v1/health", api_health, ["GET"]),
+    ("/api/v1/signer/status", api_signer_status, ["GET"]),
     ("/api/v1/build", api_build, ["GET"]),
     ("/api/v1/state", api_state, ["GET"]),
     ("/api/v1/scrub", api_scrub, ["GET"]),

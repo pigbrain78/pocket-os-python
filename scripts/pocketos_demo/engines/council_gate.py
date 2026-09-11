@@ -33,6 +33,9 @@ signing keys are never loaded and /council-sign is disabled.
 from __future__ import annotations
 
 import os
+import json
+import urllib.error
+import urllib.request
 from typing import Any, Optional
 
 from . import council_ratification as council
@@ -47,6 +50,8 @@ from . import council_ratification as council
 # usable out of the box, while allowing production deployments to disable the
 # in-process signer explicitly.
 _DEMO_SIGNING = os.environ.get("POCKETOS_COUNCIL_DEMO_SIGNING", "1") == "1"
+_CONSOLE_SIGNER_URL = os.environ.get("POCKETOS_CONSOLE_SIGNER_URL", "").strip().rstrip("/")
+_CONSOLE_SIGNER_TOKEN = os.environ.get("POCKETOS_CONSOLE_SIGNER_TOKEN", "").strip()
 
 # Deterministic demo seeds (used ONLY in demo signing mode). In production these
 # are replaced by off-box member keys; Pocket OS never sees the raw signing key.
@@ -91,6 +96,43 @@ def signing_enabled() -> bool:
     this is False, so /council-sign is disabled and no signing key is reachable
     over HTTP."""
     return _DEMO_SIGNING
+
+
+def console_signer_configured() -> bool:
+    """True only when the production off-box signer contract is configured."""
+    return bool(_CONSOLE_SIGNER_URL and _CONSOLE_SIGNER_TOKEN)
+
+
+def console_signer_status() -> dict[str, Any]:
+    return {
+        "configured": console_signer_configured(),
+        "mode": "console-signer" if console_signer_configured() else ("demo" if _DEMO_SIGNING else "off-box-unconfigured"),
+        "private_keys_in_pocketos": False,
+    }
+
+
+def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[str]:
+    """Ask the configured off-box Console Signer for a signature.
+
+    PocketOS never receives or stores signing keys. Any missing configuration,
+    transport failure, malformed response, or signer error fails closed.
+    """
+    if not console_signer_configured():
+        return None
+    payload = json.dumps({"member": member, "decision_id": candidate_id, "state": state}).encode()
+    request = urllib.request.Request(
+        f"{_CONSOLE_SIGNER_URL}/sign",
+        data=payload,
+        method="POST",
+        headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {_CONSOLE_SIGNER_TOKEN}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            body = json.loads(response.read().decode())
+        signature = body.get("signature")
+        return signature if isinstance(signature, str) and signature.strip() else None
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
 
 
 def sign_for_member(member: str, candidate_id: str, state: str) -> Optional[str]:
