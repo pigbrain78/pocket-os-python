@@ -12,7 +12,7 @@ from scripts.pocketos_demo.app import app
 
 client = TestClient(app)
 
-for path in ["/api/v1/health", "/api/v1/build", "/api/v1/state", "/api/v1/twin", "/api/v1/shadow", "/api/v1/decisions"]:
+for path in ["/api/v1/health", "/api/v1/build", "/api/v1/state", "/api/v1/twin", "/api/v1/shadow", "/api/v1/decisions", "/api/v1/evidence/traits"]:
     response = client.get(path)
     assert response.status_code == 200, (path, response.status_code, response.text)
     assert isinstance(response.json(), dict)
@@ -24,6 +24,8 @@ assert client.get("/api/v1/projects").status_code == 200
 assert client.get("/api/v1/open-loops").status_code == 200
 assert client.post("/api/v1/shadow/propose", json={"text": "review this recommendation"}).status_code == 401
 assert client.get("/api/v1/decisions").status_code == 200
+trait_evidence = client.get("/api/v1/evidence/traits").json()["traits"]
+assert len(trait_evidence) == 6 and all(item["epistemic"] == "INFERRED" for item in trait_evidence)
 assert client.post("/api/v1/decisions/D-unknown/council-approve").status_code == 401
 assert client.post("/api/v1/decisions/D-unknown/ratify", json={"signatures": {}}).status_code == 401
 assert client.post("/api/v1/decisions/D-unknown/council-sign?member=council-a").status_code == 401
@@ -80,4 +82,5 @@ assert "/api/v1/stream" in paths
 assert "/api/v1/scrub" in paths
 assert "/api/v1/replay/bookmarks/audit" in paths
 assert "/api/v1/preferences/audit" in paths
+assert "/api/v1/evidence/traits" in paths
 print("PocketOS /api/v1 surface verified")
