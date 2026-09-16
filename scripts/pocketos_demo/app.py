@@ -618,6 +618,50 @@ def api_state() -> dict[str, Any]:
     }
 
 
+@app.get("/api/v1/evidence/traits")
+def api_trait_evidence() -> dict[str, Any]:
+    """Return server-owned epistemic context for the six cockpit traits.
+
+    Trait scores are representational projections. Evidence references are
+    derived here from the canonical ledger so the client never invents
+    citations or promotes an inferred trait to a verified fact.
+    """
+    records = STATE.records()
+    trait_rules: dict[str, tuple[str, ...]] = {
+        "recall": ("knowledge.", "memory."),
+        "reasoning": ("agent.", "decision."),
+        "focus": ("task.", "project."),
+        "agency": ("decision.", "proposal."),
+        "integrity": ("system.", "ledger."),
+        "synthesis": ("knowledge.", "agent.", "relationship."),
+    }
+    evidence: list[dict[str, Any]] = []
+    for trait in genome_traits():
+        matching = [
+            record for record in records
+            if any(str(record.get("event", "")).startswith(prefix) for prefix in trait_rules[trait.name])
+        ]
+        refs = [
+            {
+                "sequence": record.get("sequence"),
+                "event": record.get("event"),
+                "source": record.get("source"),
+                "hash": record.get("hash"),
+                "payload": record.get("payload", {}),
+            }
+            for record in matching[-5:]
+        ]
+        evidence.append({
+            "name": trait.name,
+            "score": trait.score,
+            "epistemic": "INFERRED",
+            "confidence": round(trait.score / 100, 2),
+            "provenance": "canonical-ledger-derived",
+            "evidence": refs,
+        })
+    return {**_projection_base(), "traits": evidence, "source": "canonical-ledger"}
+
+
 @app.get("/api/scrub")
 def api_scrub(end: Optional[int] = None, include_decisions: bool = False) -> dict[str, Any]:
     """Replay scrub. include_decisions reconstructs the decision registry at
