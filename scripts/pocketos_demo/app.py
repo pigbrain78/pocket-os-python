@@ -511,6 +511,8 @@ class ProposalBody(BaseModel):
     risk: str = "MEDIUM"
     reversible: bool = True
     send_to_council: bool = False
+    expected_outcomes: list[str] = []
+    review_after_days: int = 30
 
 
 class LoginBody(BaseModel):
@@ -527,6 +529,13 @@ class RatifyBody(BaseModel):
 
 class ExecuteBody(BaseModel):
     claimed_authority: str = "NONE"  # ignored
+
+
+class OutcomeReviewBody(BaseModel):
+    outcome: str
+    notes: str = ""
+    lessons: list[str] = []
+    actual_outcomes: list[str] = []
 
 
 class MemoryRememberBody(BaseModel):
@@ -876,6 +885,73 @@ def _decision_records(decision_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def _decision_receipt(decision_id: str) -> dict[str, Any]:
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    records = _decision_records(decision_id)
+    proposal = next((r for r in records if r["event"] == "decision.proposed"), None)
+    ratification = next((r for r in records if r["event"] == "decision.ratified"), None)
+    reviews = [r for r in records if r["event"] == "decision.outcome_reviewed"]
+    proposal_payload = (proposal or {}).get("payload", {})
+    ratification_payload = (ratification or {}).get("payload", {})
+    verification = _verification_view()
+    return {
+        "receipt": {
+            "decision": decision.view(),
+            "evidence_count": len(records),
+            "evidence": records,
+            "council": {
+                "approved": decision.council_approved,
+                "signatures": ratification_payload.get("ratifiers", []),
+                "quorum": len(ratification_payload.get("ratifiers", [])),
+            },
+            "human": {"status": "RATIFIED" if decision.human_ratified else "PENDING"},
+            "risk": decision.risk,
+            "reversible": decision.reversible,
+            "expected_outcomes": proposal_payload.get("expected_outcomes", []),
+            "review_after_days": proposal_payload.get("review_after_days", 30),
+            "status": "REVIEWED" if reviews else ("EXECUTED" if decision.status == STATUS_EXECUTED else decision.status),
+            "outcome_reviews": [r["payload"] for r in reviews],
+        },
+        "integrity": verification["integrity"],
+        "broken_seq": verification["broken_seq"],
+        "revision": STATE.revision(),
+        "source": "canonical-ledger",
+    }
+
+
+@app.get("/api/v1/decisions/{decision_id}/receipt")
+def api_decision_receipt(decision_id: str) -> dict[str, Any]:
+    return _decision_receipt(decision_id)
+
+
+@app.post("/api/v1/decisions/{decision_id}/outcome")
+def api_decision_outcome(decision_id: str, body: OutcomeReviewBody, request: Request) -> dict[str, Any]:
+    subject = _require_permission(_bearer(request), PERM_RATIFY)
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    if decision.status != STATUS_EXECUTED:
+        raise HTTPException(status_code=409, detail="outcome review requires an executed decision")
+    if not body.outcome.strip():
+        raise HTTPException(status_code=422, detail="outcome is required")
+    if any(r.get("event") == "decision.outcome_reviewed" for r in STATE.records() if (r.get("payload") or {}).get("decision_id") == decision_id):
+        raise HTTPException(status_code=409, detail="decision already has an outcome review")
+    STATE.append("decision.outcome_reviewed", subject, {
+        "decision_id": decision_id,
+        "outcome": body.outcome.strip(),
+        "notes": body.notes.strip(),
+        "lessons": [lesson.strip() for lesson in body.lessons[:8] if lesson.strip()],
+        "actual_outcomes": [item.strip() for item in body.actual_outcomes[:8] if item.strip()],
+        "reviewer": subject,
+    })
+    _broadcast(STATE.records()[-1])
+    return {"ok": True, **_decision_receipt(decision_id)}
+
+
 @app.get("/api/v1/decisions/{decision_id}/evidence")
 def api_decision_evidence(decision_id: str) -> dict[str, Any]:
     _sync_decision_state()
@@ -1068,6 +1144,8 @@ def api_decisions_propose(body: ProposalBody, request: Request) -> dict[str, Any
     STATE.append("decision.proposed", "WebClient", {
         "title": body.title, "decision_id": decision_id, "risk": body.risk,
         "reversible": body.reversible, "send_to_council": body.send_to_council,
+        "expected_outcomes": body.expected_outcomes[:8],
+        "review_after_days": max(1, min(body.review_after_days, 3650)),
     })
     _broadcast(STATE.records()[-1])
     _sync_decision_state()

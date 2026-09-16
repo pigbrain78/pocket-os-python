@@ -32,6 +32,8 @@ assert client.post("/api/v1/decisions/D-unknown/council-sign?member=council-a").
 assert client.get("/api/v1/decisions/D-unknown/evidence").status_code == 404
 assert client.get("/api/v1/decisions/D-unknown/ledger").status_code == 404
 assert client.post("/api/v1/decisions/D-unknown/execute").status_code == 401
+assert client.get("/api/v1/decisions/D-unknown/receipt").status_code == 404
+assert client.post("/api/v1/decisions/D-unknown/outcome", json={"outcome": "no"}).status_code == 401
 assert client.get("/api/v1/scrub?end=-1&include_decisions=true").json().get("ok") is False
 assert client.get("/api/v1/scrub?end=999999&include_decisions=true").json().get("ok") in {True, False}
 assert client.get("/api/v1/replay/bookmarks").status_code == 401
@@ -55,6 +57,11 @@ ratified = client.post("/api/v1/decisions/D-WORKSPACE-1003/ratify", headers=auth
 assert ratified.status_code == 200 and ratified.json()["ok"] is True
 executed = client.post("/api/v1/decisions/D-WORKSPACE-1003/execute", headers=auth_headers, json={"claimed_authority": "NONE"})
 assert executed.status_code == 200 and executed.json()["ok"] is True
+receipt = client.get("/api/v1/decisions/D-WORKSPACE-1003/receipt", headers=auth_headers)
+assert receipt.status_code == 200 and receipt.json()["receipt"]["status"] == "EXECUTED"
+review = client.post("/api/v1/decisions/D-WORKSPACE-1003/outcome", headers=auth_headers, json={"outcome": "verified", "lessons": ["review early"]})
+assert review.status_code == 200 and review.json()["receipt"]["status"] == "REVIEWED"
+assert client.post("/api/v1/decisions/D-WORKSPACE-1003/outcome", headers=auth_headers, json={"outcome": "duplicate"}).status_code == 409
 assert client.post("/api/v1/decisions/D-WORKSPACE-1003/reject", headers=auth_headers).status_code == 409
 bookmark = client.post("/api/v1/replay/bookmarks", headers=auth_headers, json={"end": 1, "label": "Initial snapshot", "device_id": "device-a", "device_name": "Test phone", "platform": "ios", "client_updated_at": "2026-09-11T10:00:00+00:00"})
 assert bookmark.status_code == 200
@@ -83,4 +90,6 @@ assert "/api/v1/scrub" in paths
 assert "/api/v1/replay/bookmarks/audit" in paths
 assert "/api/v1/preferences/audit" in paths
 assert "/api/v1/evidence/traits" in paths
+assert "/api/v1/decisions/{decision_id}/receipt" in paths
+assert "/api/v1/decisions/{decision_id}/outcome" in paths
 print("PocketOS /api/v1 surface verified")
