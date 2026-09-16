@@ -856,6 +856,43 @@ def api_decision_receipt(decision_id: str) -> dict[str, Any]:
     return _decision_receipt(decision_id)
 
 
+@app.get("/api/v1/decisions/{decision_id}/receipt/share")
+def api_decision_receipt_share(decision_id: str, request: Request, include_evidence: bool = False) -> dict[str, Any]:
+    _require_permission(_bearer(request), PERM_READ)
+    result = _decision_receipt(decision_id)
+    receipt = result["receipt"]
+    shared = dict(receipt)
+    if not include_evidence:
+        shared.pop("evidence", None)
+        shared["evidence_count"] = receipt["evidence_count"]
+    shared["sharing"] = {"redacted": not include_evidence, "authority": "READ_ONLY", "can_execute": False, "can_ratify": False}
+    return {"share": shared, "integrity": result["integrity"], "source": "canonical-ledger-share"}
+
+
+@app.get("/api/v1/decisions/review/due")
+def api_decision_reviews_due(request: Request) -> dict[str, Any]:
+    _require_permission(_bearer(request), PERM_READ)
+    _sync_decision_state()
+    due = []
+    for decision in _DECISION_REGISTRY.all():
+        receipt = _decision_receipt(decision.decision_id)["receipt"]
+        if decision.status == STATUS_EXECUTED and not receipt["outcome_reviews"]:
+            due.append({"decision_id": decision.decision_id, "title": decision.title, "review_after_days": receipt["review_after_days"], "status": "REVIEW_DUE"})
+    return {"reviews": due, "source": "canonical-ledger-review-queue"}
+
+
+@app.post("/api/v1/twin/debate")
+def api_twin_debate(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    _require_permission(_bearer(request), PERM_READ)
+    topic = str(body.get("topic", "")).strip()
+    if not topic:
+        raise HTTPException(status_code=422, detail="topic is required")
+    twin = cognitive_state(STATE.records()).view()
+    evidence = _decision_records(str(body.get("decision_id", ""))) if body.get("decision_id") else STATE.records()[-8:]
+    evidence_refs = [{"sequence": r.get("sequence"), "event": r.get("event"), "hash": r.get("hash")} for r in evidence]
+    return {"debate": {"topic": topic, "advocate": {"position": "The opportunity may be worth pursuing.", "epistemic": "INFERRED", "confidence": 0.5, "evidence": evidence_refs}, "skeptic": {"position": "The available evidence may not support the conclusion yet.", "epistemic": "INFERRED", "confidence": 0.5, "evidence": evidence_refs}, "evidence": evidence_refs, "twin_model_version": twin.get("model_version"), "authority": "NONE", "can_execute": False, "can_ratify": False}, "source": "canonical-evidence-debate"}
+
+
 @app.post("/api/v1/decisions/{decision_id}/outcome")
 def api_decision_outcome(decision_id: str, body: OutcomeReviewBody, request: Request) -> dict[str, Any]:
     subject = _require_permission(_bearer(request), PERM_RATIFY)
@@ -1390,6 +1427,10 @@ for _path, _endpoint, _methods in (
     ("/api/v1/decisions/{decision_id}/ratify", api_decisions_ratify, ["POST"]),
     ("/api/v1/decisions/{decision_id}/reject", api_decisions_reject, ["POST"]),
     ("/api/v1/decisions/{decision_id}/execute", api_decisions_execute, ["POST"]),
+    ("/api/v1/decisions/{decision_id}/receipt", api_decision_receipt, ["GET"]),
+    ("/api/v1/decisions/{decision_id}/receipt/share", api_decision_receipt_share, ["GET"]),
+    ("/api/v1/decisions/review/due", api_decision_reviews_due, ["GET"]),
+    ("/api/v1/twin/debate", api_twin_debate, ["POST"]),
     ("/api/v1/stream", api_stream, ["GET"]),
 ):
     app.add_api_route(_path, _endpoint, methods=_methods, include_in_schema=True)
