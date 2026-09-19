@@ -132,10 +132,11 @@ export default function TimelineScreen() {
     setBookmarkError(null);
     setBookmarkSaving(true);
     try {
+      const bookmarkAt = isLive && bounds.latest ? bounds.latest : atIso;
       const created = await api<Bookmark>("/api/replay/bookmarks", {
         token,
         method: "POST",
-        body: JSON.stringify({ label, at: atIso }),
+        body: JSON.stringify({ label, at: bookmarkAt }),
       });
       // Insert in descending order by `at` to match server ordering.
       setBookmarks((prev) => [created, ...prev].sort((a, b) => (a.at < b.at ? 1 : -1)));
