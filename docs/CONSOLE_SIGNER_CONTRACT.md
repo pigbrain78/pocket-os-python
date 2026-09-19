@@ -42,7 +42,7 @@ This shape is provisional until the signer operator confirms the production cont
 
 ## Adapter response
 
-The current adapter accepts a non-empty JSON string field:
+The current adapter accepts a strict Ed25519 JSON envelope:
 
 ```json
 {

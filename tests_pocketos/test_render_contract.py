@@ -20,6 +20,8 @@ def test_render_declares_signer_secrets_without_committing_values():
 def test_render_keeps_signing_fail_closed_by_default():
     text = RENDER_YAML.read_text()
     assert 'key: POCKETOS_COUNCIL_SIGNATURE_ALGORITHM\n        value: "Ed25519"' in text
+    assert 'key: POCKETOS_RUNTIME_ENV\n        value: "production"' in text
     assert "key: POCKETOS_COUNCIL_PUBLIC_KEYS_JSON" in text
     assert 'key: POCKETOS_PRODUCTION_SIGNING_ENABLED\n        value: "0"' in text
     assert 'key: POCKETOS_COUNCIL_DEMO_SIGNING\n        value: "0"' in text
+    assert 'key: POCKETOS_COUNCIL_TEST_SIGNER_ENABLED\n        value: "0"' in text

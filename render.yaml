@@ -15,11 +15,15 @@ services:
         sync: false
       - key: POCKETOS_COUNCIL_SIGNATURE_ALGORITHM
         value: "Ed25519"
+      - key: POCKETOS_RUNTIME_ENV
+        value: "production"
       - key: POCKETOS_COUNCIL_PUBLIC_KEYS_JSON
         sync: false
       - key: POCKETOS_PRODUCTION_SIGNING_ENABLED
         value: "0"
       - key: POCKETOS_COUNCIL_DEMO_SIGNING
+        value: "0"
+      - key: POCKETOS_COUNCIL_TEST_SIGNER_ENABLED
         value: "0"
       - key: POCKETOS_CORS_ORIGIN_REGEX
         sync: false
