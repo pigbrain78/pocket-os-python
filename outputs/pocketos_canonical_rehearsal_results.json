@@ -1,0 +1,360 @@
+{
+  "base_url": "https://pocketos-canonical-api.onrender.com",
+  "scenarios": {
+    "cockpit_snapshot": {
+      "status": {
+        "status": "healthy",
+        "ledger_integrity": "INTACT",
+        "records": 26
+      },
+      "twin": {
+        "model_version": "twin-1.0",
+        "summary": "Twin derives 6 memory reference(s), 2 open loop(s), 1 inferred relationship(s), and a current focus (inferred) from 26 ledger event(s) ending at sequence 26.",
+        "current_focus": {
+          "text": "Focus appears to be \u201cscaffold web console\u201d",
+          "epistemic": "INFERRED",
+          "confidence": 0.7,
+          "evidence": [
+            17
+          ],
+          "provenance": "ledger#17"
+        },
+        "open_loops": [
+          {
+            "text": "open loop: wire governance console",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              18
+            ],
+            "provenance": "ledger#18"
+          },
+          {
+            "text": "open loop: integrate replay scrubber",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              20
+            ],
+            "provenance": "ledger#20"
+          }
+        ],
+        "active_projects": [
+          {
+            "text": "PocketOS \u2014 12 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              1
+            ],
+            "provenance": "ledger#1"
+          },
+          {
+            "text": "AI Shadow \u2014 3 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              8
+            ],
+            "provenance": "ledger#8"
+          },
+          {
+            "text": "Governance \u2014 3 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              5
+            ],
+            "provenance": "ledger#5"
+          },
+          {
+            "text": "Council \u2014 2 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              9
+            ],
+            "provenance": "ledger#9"
+          },
+          {
+            "text": "Human \u2014 2 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              10
+            ],
+            "provenance": "ledger#10"
+          },
+          {
+            "text": "Import \u2014 2 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              21
+            ],
+            "provenance": "ledger#21"
+          },
+          {
+            "text": "RALPH5 \u2014 1 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              23
+            ],
+            "provenance": "ledger#23"
+          },
+          {
+            "text": "WebClient \u2014 1 events",
+            "epistemic": "OBSERVED",
+            "confidence": 0.99,
+            "evidence": [
+              26
+            ],
+            "provenance": "ledger#26"
+          }
+        ],
+        "relevant_memories": [
+          {
+            "text": "plan for PocketOS web control plane",
+            "epistemic": "VERIFIED",
+            "confidence": 0.98,
+            "evidence": [
+              15
+            ],
+            "provenance": "ledger#15"
+          },
+          {
+            "text": "edge node sync cadence",
+            "epistemic": "VERIFIED",
+            "confidence": 0.98,
+            "evidence": [
+              16
+            ],
+            "provenance": "ledger#16"
+          },
+          {
+            "text": "conflicting claim: system state: web",
+            "epistemic": "UNCERTAIN",
+            "confidence": 0.5,
+            "evidence": [
+              1
+            ],
+            "provenance": "ledger#1"
+          },
+          {
+            "text": "conflicting claim: system state: saas",
+            "epistemic": "UNCERTAIN",
+            "confidence": 0.5,
+            "evidence": [
+              2
+            ],
+            "provenance": "ledger#2"
+          },
+          {
+            "text": "conflicting claim: system state: web",
+            "epistemic": "UNCERTAIN",
+            "confidence": 0.5,
+            "evidence": [
+              3
+            ],
+            "provenance": "ledger#3"
+          },
+          {
+            "text": "conflicting claim: system state: saas",
+            "epistemic": "UNCERTAIN",
+            "confidence": 0.5,
+            "evidence": [
+              4
+            ],
+            "provenance": "ledger#4"
+          }
+        ]
+      },
+      "shadow": {
+        "items": [
+          {
+            "type": "OBSERVATION",
+            "text": "Shadow observes active project work with open task loops.",
+            "confidence": 0.91,
+            "evidence": [
+              17,
+              18,
+              20
+            ],
+            "provenance": "ledger#17 (task.created)",
+            "status": "advisory",
+            "authority": "NONE",
+            "next_step": "Review open task loops."
+          },
+          {
+            "type": "WARNING",
+            "text": "Shadow detects conflicting state claims in memory.",
+            "confidence": 0.93,
+            "evidence": [
+              1,
+              2,
+              3
+            ],
+            "provenance": "ledger#1 (memory.created)",
+            "status": "advisory",
+            "authority": "NONE",
+            "next_step": "Reconcile conflicting memory claims."
+          },
+          {
+            "type": "PROPOSAL",
+            "text": "Shadow proposes reviewing current project dependencies.",
+            "confidence": 0.79,
+            "evidence": [
+              21,
+              22
+            ],
+            "provenance": "ledger#-",
+            "status": "advisory",
+            "authority": "NONE",
+            "next_step": "Send to council for review."
+          }
+        ],
+        "authority_boundary": {
+          "shadow_can_execute": false,
+          "shadow_can_ratify": false,
+          "shadow_authority": "NONE",
+          "execution_requires": [
+            "COUNCIL_CONSENSUS",
+            "HUMAN_RATIFICATION"
+          ]
+        }
+      },
+      "decisions": [
+        {
+          "decision_id": "D-CORPUS-1001",
+          "title": "Execute capability: ingest v1 corpus",
+          "status": "RATIFIED",
+          "stage": "GOVERNANCE_BOUNDARY",
+          "human_ratified": true,
+          "council_approved": true,
+          "rejected": false,
+          "can_execute": true,
+          "risk": "MEDIUM",
+          "reversible": true
+        },
+        {
+          "decision_id": "D-METRICS-1002",
+          "title": "Publish internal metrics externally",
+          "status": "REJECTED",
+          "stage": "GOVERNANCE_BOUNDARY",
+          "human_ratified": false,
+          "council_approved": true,
+          "rejected": true,
+          "can_execute": false,
+          "risk": "HIGH",
+          "reversible": false
+        },
+        {
+          "decision_id": "D-WORKSPACE-1003",
+          "title": "Open new knowledge workspace",
+          "status": "PENDING",
+          "stage": "PROPOSAL",
+          "human_ratified": false,
+          "council_approved": false,
+          "rejected": false,
+          "can_execute": false,
+          "risk": "LOW",
+          "reversible": true
+        },
+        {
+          "decision_id": "D-B7729F03535099EB",
+          "title": "SSE live spine probe",
+          "status": "PENDING",
+          "stage": "PROPOSAL",
+          "human_ratified": false,
+          "council_approved": false,
+          "rejected": false,
+          "can_execute": false,
+          "risk": "MEDIUM",
+          "reversible": true
+        }
+      ]
+    },
+    "shadow_to_governed_proposal": {
+      "shadow_recommendation": {
+        "type": "PROPOSAL",
+        "text": "Shadow proposes reviewing current project dependencies.",
+        "confidence": 0.79,
+        "evidence": [
+          21,
+          22
+        ],
+        "provenance": "ledger#-",
+        "status": "advisory",
+        "authority": "NONE",
+        "next_step": "Send to council for review."
+      },
+      "proposal": {
+        "decision_id": "D-DA7971C9948D8BFA",
+        "title": "Review current project dependencies",
+        "status": "COUNCIL",
+        "stage": "PROPOSAL",
+        "human_ratified": false,
+        "council_approved": false,
+        "rejected": false,
+        "can_execute": false,
+        "risk": "LOW",
+        "reversible": true
+      },
+      "pre_ratification_execute": {
+        "ok": false,
+        "error": {
+          "code": "EXECUTION_DENIED",
+          "message": "decision is not human-ratified",
+          "decision_id": "D-DA7971C9948D8BFA"
+        }
+      },
+      "council_signatures": [
+        {
+          "status_code": 403,
+          "ok": null,
+          "error": {
+            "message": "production signing is disabled or Console Signer is unavailable"
+          }
+        }
+      ],
+      "after_council_and_human_ratification": null,
+      "runtime_execute_with_forged_shadow_claim": {
+        "ok": false,
+        "result": null,
+        "recorded_authority": null
+      }
+    },
+    "integrity_and_replay": {
+      "intact_replay": {
+        "ok": true,
+        "provenance": "Reconstructed from ledger events 1\u201325",
+        "event_count": 25,
+        "decision_count": 3
+      },
+      "compromised_replay": {
+        "ok": false,
+        "error": {
+          "code": "SCRUB_REFUSED",
+          "message": "Refusing to reconstruct state over a compromised ledger",
+          "broken_seq": 1
+        },
+        "state_present": false
+      }
+    },
+    "live_event_spine": {
+      "event_received": false,
+      "event_type": null,
+      "event_sequence": null,
+      "proposal_sequence": 26,
+      "event_error": "SSE consumer unavailable in sandbox",
+      "event_is_observation_not_authority": true
+    },
+    "permission_boundary": {
+      "observer_status_code": 403,
+      "observer_error": {
+        "message": "permission required: PROPOSE"
+      }
+    }
+  }
+}

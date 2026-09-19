@@ -934,6 +934,16 @@ def api_decision_ledger(decision_id: str) -> dict[str, Any]:
     return {**_projection_base(), "decision_id": decision_id, "ledger": _decision_records(decision_id), "source": "canonical-ledger"}
 
 
+@app.get("/api/v1/decisions/{decision_id}")
+def api_decision_detail(decision_id: str) -> dict[str, Any]:
+    """Return one canonical decision projection for read-after-write checks."""
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    return {**_projection_base(), "ok": True, "item": decision.view(), "source": "canonical-decision-reducer"}
+
+
 @app.post("/api/v1/shadow/propose")
 def api_shadow_propose(body: ShadowProposalBody, request: Request) -> dict[str, Any]:
     """Convert an advisory Shadow item into an ordinary governed proposal.
@@ -1418,6 +1428,10 @@ for _path, _endpoint, _methods in (
     ("/api/v1/twin", api_twin, ["GET"]),
     ("/api/v1/shadow", api_shadow, ["GET"]),
     ("/api/v1/decisions", api_decisions, ["GET"]),
+    ("/api/v1/decisions/{decision_id}", api_decision_detail, ["GET"]),
+    # Compatibility alias for clients that already use the unversioned
+    # mutation surface (/api/decisions/{decision_id}/...).
+    ("/api/decisions/{decision_id}", api_decision_detail, ["GET"]),
     ("/api/v1/login", api_login, ["POST"]),
     ("/api/v1/session/me", api_session_me, ["GET"]),
     ("/api/v1/logout", api_logout, ["POST"]),
