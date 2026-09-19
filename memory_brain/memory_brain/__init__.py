@@ -17,7 +17,15 @@ from .canonical import digest, canonical_json  # noqa: F401
 from .models import Confidence, MemoryRecord  # noqa: F401
 from .provenance import Provenance, ProvenanceLink  # noqa: F401
 from .api import MemoryAPI  # noqa: F401
+from .memory_palace import HollowMemoryPalace, CreativeProfessional  # noqa: F401
+from .ledger_integrity import (  # noqa: F401
+    ChainCompromisedError,
+    LedgerEntry,
+    verify_ledger_integrity,
+)
 
 __all__ = ["MemoryBrain", "Ledger", "LedgerIntegrityError", "MemoryAPI",
            "digest", "canonical_json", "Confidence", "Provenance",
-           "ProvenanceLink", "MemoryRecord", "__version__"]
+           "ProvenanceLink", "MemoryRecord", "HollowMemoryPalace",
+           "CreativeProfessional", "ChainCompromisedError", "LedgerEntry",
+           "verify_ledger_integrity", "__version__"]
