@@ -88,11 +88,13 @@ def main() -> None:
     twin = must("GET", "/api/twin")["cognitive_twin"]
     shadow = must("GET", "/api/shadow")["ai_shadow"]
     decisions_body = must("GET", "/api/decisions")
+    signer_status_code, signer_status_body = request("GET", "/api/v1/signer/status")
     decisions = decisions_body.get("decisions", decisions_body.get("items", []))
     results["scenarios"]["cockpit_snapshot"] = {
         "status": {"status": status_body["status"], "ledger_integrity": status_body["integrity"], "records": status_body["records"]},
         "twin": {"model_version": twin["model_version"], "summary": twin["summary"], "current_focus": twin["state"]["current_focus"], "open_loops": twin["state"]["open_loops"], "active_projects": twin["state"]["active_projects"], "relevant_memories": twin["relevant_memories"]},
         "shadow": {"items": shadow["items"], "authority_boundary": shadow["authority_boundary"]},
+        "signer_status": {"status_code": signer_status_code, "signer": signer_status_body.get("signer"), "error": response_error(signer_status_body)},
         "decisions": [compact_decision(d) for d in decisions],
     }
 
@@ -122,7 +124,8 @@ def main() -> None:
     if len(council_signatures) == 2 and all(item["status_code"] < 300 for item in council_signatures):
         ratified = must("POST", f"/api/v1/decisions/{decision_id}/ratify", admin, {})
         executed = must("POST", f"/api/decisions/{decision_id}/execute", admin, {"claimed_authority": "SHADOW"})
-    results["scenarios"]["shadow_to_governed_proposal"] = {"shadow_recommendation": recommendation, "proposal": compact_decision(decision), "pre_ratification_execute": {"ok": denied.get("ok"), "error": response_error(denied)}, "council_signatures": council_signatures, "after_council_and_human_ratification": compact_decision(response_decision(ratified)) if ratified else None, "runtime_execute_with_forged_shadow_claim": {"ok": executed.get("ok") if executed else False, "result": executed.get("result") if executed else None, "recorded_authority": (response_decision(executed) or {}).get("human_ratified") if executed else None}}
+    readback_status, readback_body = request("GET", f"/api/v1/decisions/{decision_id}")
+    results["scenarios"]["shadow_to_governed_proposal"] = {"shadow_recommendation": recommendation, "proposal": compact_decision(decision), "pre_ratification_execute": {"ok": denied.get("ok"), "error": response_error(denied)}, "council_signatures": council_signatures, "after_council_and_human_ratification": compact_decision(response_decision(ratified)) if ratified else None, "runtime_execute_with_forged_shadow_claim": {"ok": executed.get("ok") if executed else False, "result": executed.get("result") if executed else None, "recorded_authority": (response_decision(executed) or {}).get("human_ratified") if executed else None}, "decision_readback": {"status_code": readback_status, "decision": compact_decision(response_decision(readback_body)), "error": response_error(readback_body)}}
 
     must("POST", "/api/demo/reset", admin)
     replay_ok = must("GET", "/api/scrub?include_decisions=true")
