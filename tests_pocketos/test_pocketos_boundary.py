@@ -204,7 +204,22 @@ def test_propose_then_ratify_then_execute_path():
     # COUNCIL or PENDING until human ratification.
     assert prop.json()["decision"]["status"] in ("PENDING", "PROPOSED", "COUNCIL")
     assert not prop.json()["decision"].get("human_ratified", False)
-    r = client.post("/api/v1/decisions/" + did + "/ratify", json={}, headers=_h(tok))
+    approved = client.post(f"/api/v1/decisions/{did}/council-approve", headers=_h(tok))
+    assert approved.status_code == 200, approved.text
+    old_signer = A.council_gate._TEST_SIGNER_ENABLED
+    old_env = A.council_gate._RUNTIME_ENV
+    A.council_gate._TEST_SIGNER_ENABLED = True
+    A.council_gate._RUNTIME_ENV = "sandbox"
+    try:
+        signatures = {}
+        for member in ("council-a", "council-b"):
+            signed = client.post(f"/api/v1/decisions/{did}/council-sign?member={member}", headers=_h(tok))
+            assert signed.status_code == 200, signed.text
+            signatures[member] = signed.json()["signature"]
+        r = client.post("/api/v1/decisions/" + did + "/ratify", json={"signatures": signatures}, headers=_h(tok))
+    finally:
+        A.council_gate._TEST_SIGNER_ENABLED = old_signer
+        A.council_gate._RUNTIME_ENV = old_env
     assert r.status_code == 200, r.text
     assert r.json()["decision"]["status"] == "RATIFIED"
 

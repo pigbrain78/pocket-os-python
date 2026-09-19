@@ -587,6 +587,33 @@ class AuditPreferencesBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="PocketOS Web Demo")
+
+
+def _request_id() -> str:
+    return f"req-{secrets.token_hex(8)}"
+
+
+@app.exception_handler(HTTPException)
+async def normalized_http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    """Keep the versioned client boundary stable without hiding HTTP status."""
+    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    code = {
+        401: "AUTHENTICATION_REQUIRED",
+        403: "AUTHORIZATION_DENIED",
+        404: "NOT_FOUND",
+    }.get(exc.status_code, f"HTTP_{exc.status_code}")
+    body = {
+        "api_version": "1",
+        "schema_version": "v2",
+        "request_id": _request_id(),
+        "error": {"code": code, "message": detail, "request_id": _request_id()},
+    }
+    headers = dict(exc.headers or {})
+    if exc.status_code == 429:
+        headers.setdefault("Retry-After", "60")
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+
+
 _cors_origins = [origin.strip() for origin in os.environ.get(
     "POCKETOS_CORS_ORIGINS",
     "https://8081-ifn5nx1y0robf8dqdk5bp-f24c55de.us1.manus.computer,http://localhost:8081,http://127.0.0.1:8081",
@@ -734,7 +761,9 @@ def api_replay_status() -> dict[str, Any]:
     v = _verification_view()
     records = STATE.records()
     return {
-        "ledger": {"integrity": v["integrity"], "valid": v["valid"]},
+        "api_version": "1",
+        "schema_version": "v2",
+        "ledger": {"integrity": v["integrity"], "valid": v["valid"], "broken_seq": v["broken_seq"]},
         "head_sequence": len(records),
         "events": len(records),
         "refuses_when_compromised": True,
@@ -869,7 +898,8 @@ def api_open_loops() -> dict[str, Any]:
 @app.get("/api/decisions")
 def api_decisions() -> dict[str, Any]:
     _sync_decision_state()
-    return {**_projection_base(), "decisions": [d.view() for d in _DECISION_REGISTRY.all()]}
+    items = [d.view() for d in _DECISION_REGISTRY.all()]
+    return {"api_version": "1", "schema_version": "v2", "items": items}
 
 
 def _decision_records(decision_id: str) -> list[dict[str, Any]]:
@@ -1013,7 +1043,15 @@ def api_decision_detail(decision_id: str) -> dict[str, Any]:
     decision = _DECISION_REGISTRY.get(decision_id)
     if decision is None:
         raise HTTPException(status_code=404, detail="unknown decision")
-    return {**_projection_base(), "ok": True, "item": decision.view(), "source": "canonical-decision-reducer"}
+    return {"api_version": "1", "schema_version": "v2", "item": decision.view()}
+
+
+def api_decision_detail_compat(decision_id: str) -> dict[str, Any]:
+    _sync_decision_state()
+    decision = _DECISION_REGISTRY.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="unknown decision")
+    return {**_projection_base(), "api_version": "1", "ok": True, "item": decision.view(), "source": "canonical-decision-reducer"}
 
 
 @app.post("/api/v1/shadow/propose")
@@ -1091,6 +1129,8 @@ def api_memory_health() -> dict[str, Any]:
 
 @app.get("/api/v1/memory/{memory_id}")
 def api_memory_detail(memory_id: str) -> dict[str, Any]:
+    if memory_id.isdigit():
+        return api_v1_memory_item(memory_id)
     detail = MEMORY_API.explain(memory_id)
     if detail.get("memory") is None:
         raise HTTPException(status_code=404, detail="memory not found")
@@ -1525,16 +1565,12 @@ for _path, _endpoint, _methods in (
     ("/api/v1/scrub", api_scrub, ["GET"]),
     ("/api/v1/replay/status", api_replay_status, ["GET"]),
     ("/api/v1/replay/inspect", api_replay_inspect, ["GET"]),
-    ("/api/v1/replay/bookmarks", api_replay_bookmarks, ["GET"]),
-    ("/api/v1/replay/bookmarks", api_replay_bookmark_create, ["POST"]),
-    ("/api/v1/replay/bookmarks/{end}", api_replay_bookmark_delete, ["DELETE"]),
     ("/api/v1/twin", api_twin, ["GET"]),
     ("/api/v1/shadow", api_shadow, ["GET"]),
     ("/api/v1/decisions", api_decisions, ["GET"]),
-    ("/api/v1/decisions/{decision_id}", api_decision_detail, ["GET"]),
     # Compatibility alias for clients that already use the unversioned
     # mutation surface (/api/decisions/{decision_id}/...).
-    ("/api/decisions/{decision_id}", api_decision_detail, ["GET"]),
+    ("/api/decisions/{decision_id}", api_decision_detail_compat, ["GET"]),
     ("/api/v1/login", api_login, ["POST"]),
     ("/api/v1/session/me", api_session_me, ["GET"]),
     ("/api/v1/logout", api_logout, ["POST"]),
@@ -1543,11 +1579,6 @@ for _path, _endpoint, _methods in (
     ("/api/v1/decisions/{decision_id}/council-sign", api_decisions_council_sign, ["POST"]),
     ("/api/v1/decisions/{decision_id}/ratify", api_decisions_ratify, ["POST"]),
     ("/api/v1/decisions/{decision_id}/reject", api_decisions_reject, ["POST"]),
-    ("/api/v1/decisions/{decision_id}/execute", api_decisions_execute, ["POST"]),
-    ("/api/v1/decisions/{decision_id}/receipt", api_decision_receipt, ["GET"]),
-    ("/api/v1/decisions/{decision_id}/receipt/share", api_decision_receipt_share, ["GET"]),
-    ("/api/v1/decisions/review/due", api_decision_reviews_due, ["GET"]),
-    ("/api/v1/twin/debate", api_twin_debate, ["POST"]),
     ("/api/v1/stream", api_stream, ["GET"]),
     ("/api/v1/stream/health", api_stream_health, ["GET"]),
     ("/api/v1/stream/fallback", api_stream_fallback, ["GET"]),
@@ -1568,3 +1599,106 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Ensure decision registry is synced on first request.
 _sync_decision_state()
+
+
+# ---- canonical v1 compatibility projections -------------------------------
+def _v1(body: dict[str, Any]) -> dict[str, Any]:
+    return {"api_version": "1", **body}
+
+
+def _ledger_memory_item(record: dict[str, Any]) -> dict[str, Any]:
+    seq = int(record.get("sequence") or 0)
+    return {
+        "id": str(seq),
+        "event": record.get("event", "memory.created"),
+        "kind": record.get("kind", "memory"),
+        "payload": record.get("payload") or {},
+        "provenance": f"ledger#{seq}",
+        "hash": record.get("hash"),
+    }
+
+
+def api_v1_status() -> dict[str, Any]:
+    health = api_health()
+    return _v1({
+        "status": health["status"],
+        "ledger": {"integrity": health["integrity"], "valid": health["valid"], "broken_seq": health["broken_seq"]},
+        "records": health["records"],
+        "revision": health["revision"],
+        "request_id": _request_id(),
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "v2",
+    })
+
+
+def api_v1_cognitive_twin() -> dict[str, Any]:
+    result = api_twin()
+    return _v1({"cognitive_twin": result["cognitive_twin"], "model_version": result["cognitive_twin"].get("model_version", "cognitive-twin-v1"), "schema_version": "v2"})
+
+
+def api_v1_ai_shadow() -> dict[str, Any]:
+    result = api_shadow()
+    return _v1({"ai_shadow": result["ai_shadow"], "schema_version": "v2"})
+
+
+def api_v1_memory() -> dict[str, Any]:
+    items = [_ledger_memory_item(r) for r in STATE.records() if r.get("event") == "memory.created"]
+    return _v1({"items": items, "count": len(items), "schema_version": "v2"})
+
+
+def api_v1_memory_item(memory_id: str) -> dict[str, Any]:
+    try:
+        seq = int(memory_id)
+    except ValueError:
+        seq = -1
+    record = next((r for r in STATE.records() if int(r.get("sequence") or 0) == seq and r.get("event") == "memory.created"), None)
+    if record is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return _v1({"item": _ledger_memory_item(record), "schema_version": "v2"})
+
+
+def api_v1_ledger() -> dict[str, Any]:
+    records = STATE.records()
+    v = _verification_view()
+    return _v1({
+        "ledger": {"integrity": v["integrity"], "valid": v["valid"], "broken_seq": v["broken_seq"]},
+        "genesis_sequence": int(records[0].get("sequence") or 1) if records else 0,
+        "head_sequence": int(records[-1].get("sequence") or 0) if records else 0,
+        "records": len(records),
+        "events": records,
+        "schema_version": "v2",
+    })
+
+
+def api_v1_ledger_event(sequence: int) -> dict[str, Any]:
+    record = next((r for r in STATE.records() if int(r.get("sequence") or 0) == sequence), None)
+    if record is None:
+        raise HTTPException(status_code=404, detail="ledger event not found")
+    return _v1({"event": record, "schema_version": "v2"})
+
+
+def api_v1_evidence() -> dict[str, Any]:
+    v = _verification_view()
+    return _v1({
+        "ledger": {"integrity": v["integrity"], "valid": v["valid"], "broken_seq": v["broken_seq"]},
+        "evidence_integrity": v["integrity"],
+        "signature_status": "UNVERIFIED" if not council_gate.console_signer_status().get("configured") else "CONFIGURED_NOT_PROVEN",
+        "schema_version": "v2",
+    })
+
+
+def api_v1_openapi() -> dict[str, Any]:
+    return app.openapi()
+
+
+for _path, _endpoint, _methods in (
+    ("/api/v1/status", api_v1_status, ["GET"]),
+    ("/api/v1/cognitive-twin", api_v1_cognitive_twin, ["GET"]),
+    ("/api/v1/ai-shadow", api_v1_ai_shadow, ["GET"]),
+    ("/api/v1/memory", api_v1_memory, ["GET"]),
+    ("/api/v1/ledger", api_v1_ledger, ["GET"]),
+    ("/api/v1/ledger/events/{sequence}", api_v1_ledger_event, ["GET"]),
+    ("/api/v1/evidence/verification", api_v1_evidence, ["GET"]),
+    ("/api/v1/openapi.json", api_v1_openapi, ["GET"]),
+):
+    app.add_api_route(_path, _endpoint, methods=_methods, include_in_schema=True)

@@ -30,7 +30,7 @@ def test_decision_readback_returns_canonical_reducer_projection():
 
     readback = client.get(f"/api/v1/decisions/{decision_id}")
     assert readback.status_code == 200, readback.text
-    assert readback.json()["ok"] is True
+    assert readback.json()["api_version"] == "1"
     assert readback.json()["item"]["decision_id"] == decision_id
     assert readback.json()["item"]["status"] == "PENDING"
     assert readback.json()["item"]["can_execute"] is False
