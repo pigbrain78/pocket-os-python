@@ -428,17 +428,29 @@ def _bearer(request: Request) -> Optional[str]:
 # subscriber_id -> asyncio.Queue
 _EVENT_SUBSCRIBERS: dict[str, asyncio.Queue] = {}
 _EVENT_LOCK = threading.RLock()
+_FALLBACK_EVENT_BUFFER: list[dict[str, Any]] = []
+_FALLBACK_EVENT_MAX = 512
 
 
 def _broadcast(record: dict[str, Any]) -> None:
-    import asyncio as _aio
-
-    payload = json.dumps({"type": record.get("event") or "record.append",
-                          "sequence": record.get("sequence"),
-                          "schema_version": record.get("schema_version", "v2"),
-                          "event_id": record.get("hash", ""),
-                          "payload": record.get("payload", {})})
+    envelope = {
+        "type": record.get("event") or "record.append",
+        "event_id": record.get("hash", ""),
+        "sequence": record.get("sequence"),
+        "occurred_at": record.get("timestamp"),
+        "source": record.get("source", ""),
+        "kind": record.get("kind", ""),
+        "previous_hash": record.get("previous_hash", ""),
+        "schema_version": record.get("schema_version", "v2"),
+        "payload": record.get("payload", {}),
+        "authority": "NONE",
+        "status": "advisory",
+    }
+    payload = json.dumps(envelope)
     with _EVENT_LOCK:
+        _FALLBACK_EVENT_BUFFER.append(envelope)
+        if len(_FALLBACK_EVENT_BUFFER) > _FALLBACK_EVENT_MAX:
+            del _FALLBACK_EVENT_BUFFER[: len(_FALLBACK_EVENT_BUFFER) - _FALLBACK_EVENT_MAX]
         dead = []
         for sid, q in list(_EVENT_SUBSCRIBERS.items()):
             try:
@@ -461,6 +473,14 @@ def _register_subscriber() -> str:
 def _drop_subscriber(sid: str) -> None:
     with _EVENT_LOCK:
         _EVENT_SUBSCRIBERS.pop(sid, None)
+
+
+def _fallback_events_since(sequence: Optional[int]) -> list[dict[str, Any]]:
+    with _EVENT_LOCK:
+        events = list(_FALLBACK_EVENT_BUFFER)
+        if sequence is None:
+            return events
+        return [ev for ev in events if isinstance(ev.get("sequence"), int) and ev["sequence"] > sequence]
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +626,9 @@ def api_build() -> dict[str, Any]:
 @app.get("/api/state")
 def api_state() -> dict[str, Any]:
     v = _verification_view()
+    with _EVENT_LOCK:
+        fallback_depth = len(_FALLBACK_EVENT_BUFFER)
+        sse_subscribers = len(_EVENT_SUBSCRIBERS)
     return {
         **v,
         "release": BUILD_INFO["release"],
@@ -615,6 +638,12 @@ def api_state() -> dict[str, Any]:
         "traits": [t.__dict__ for t in genome_traits()],
         "contradictions": contradiction_count(STATE.records()),
         "revision": STATE.revision(),
+        "live_spine": {
+            "active_path": "live-sse" if sse_subscribers > 0 else "fallback-poll",
+            "sse_subscribers": sse_subscribers,
+            "fallback_buffered_events": fallback_depth,
+            "authority": "NONE",
+        },
     }
 
 
@@ -673,6 +702,48 @@ def api_scrub(end: Optional[int] = None, include_decisions: bool = False) -> dic
         return {
             "ok": False,
             "error": {"code": "SCRUB_REFUSED", "message": str(exc), "broken_seq": exc.broken_seq},
+        }
+    out: dict[str, Any] = {
+        "ok": True,
+        "provenance": result.provenance_line(),
+        "start_seq": result.start_seq,
+        "end_seq": result.end_seq,
+        "event_count": result.event_count,
+        "state": result.state,
+    }
+    if include_decisions:
+        reg = DecisionRegistry()
+        reg.rebuild(list(result.events))
+        out["decisions"] = [d.view() for d in reg.all()]
+        out["events"] = list(result.events)
+    return out
+
+
+@app.get("/api/replay/status")
+def api_replay_status() -> dict[str, Any]:
+    v = _verification_view()
+    records = STATE.records()
+    return {
+        "ledger": {"integrity": v["integrity"], "valid": v["valid"]},
+        "head_sequence": len(records),
+        "events": len(records),
+        "refuses_when_compromised": True,
+    }
+
+
+@app.get("/api/replay/inspect")
+def api_replay_inspect(end: Optional[int] = None, include_decisions: bool = False) -> dict[str, Any]:
+    scrubber = Scrubber(STATE)
+    try:
+        result = scrubber.scrub(end_seq=end)
+    except ScrubberError as exc:
+        return {
+            "ok": False,
+            "error": {
+                "code": "REPLAY_REJECTED",
+                "message": "cannot reconstruct over a compromised ledger",
+                "broken_seq": exc.broken_seq,
+            },
         }
     out: dict[str, Any] = {
         "ok": True,
@@ -1035,8 +1106,7 @@ def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, 
         return {**_projection_base(), "ok": True, "member": member, "signature": sig,
                 "state": council_gate.RATIFIED_STATE, "decision_id": decision_id, "signer": "console"}
     if not council_gate.signing_enabled():
-        raise HTTPException(status_code=403,
-                            detail="production signing is disabled or Console Signer is unavailable")
+        raise HTTPException(status_code=403, detail=council_gate.signer_unavailable_message())
     sig = council_gate.sign_for_member(member, decision_id, council_gate.RATIFIED_STATE)
     if sig is None:
         raise HTTPException(status_code=400, detail=f"unknown council member: {member}")
@@ -1183,6 +1253,35 @@ async def api_stream(request: Request) -> StreamingResponse:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.get("/api/stream/health")
+def api_stream_health() -> dict[str, Any]:
+    with _EVENT_LOCK:
+        sse_subscribers = len(_EVENT_SUBSCRIBERS)
+        fallback_depth = len(_FALLBACK_EVENT_BUFFER)
+    return {
+        **_projection_base(),
+        "stream": {
+            "active_path": "live-sse" if sse_subscribers > 0 else "fallback-poll",
+            "sse_subscribers": sse_subscribers,
+            "fallback_buffered_events": fallback_depth,
+            "authority": "NONE",
+        },
+    }
+
+
+@app.get("/api/stream/fallback")
+def api_stream_fallback(since: Optional[int] = None, limit: int = 50) -> dict[str, Any]:
+    """Sandbox-safe polling bridge when live SSE consumers are unavailable."""
+    if limit < 1:
+        raise HTTPException(status_code=422, detail="limit must be >= 1")
+    events = _fallback_events_since(since)[-min(limit, 200):]
+    return {
+        **_projection_base(),
+        "stream": {"path": "fallback-poll", "authority": "NONE"},
+        "events": events,
+    }
+
+
 # ---- demo / test mutators (ADMIN gated) ------------------------------------
 
 
@@ -1297,6 +1396,8 @@ for _path, _endpoint, _methods in (
     ("/api/v1/build", api_build, ["GET"]),
     ("/api/v1/state", api_state, ["GET"]),
     ("/api/v1/scrub", api_scrub, ["GET"]),
+    ("/api/v1/replay/status", api_replay_status, ["GET"]),
+    ("/api/v1/replay/inspect", api_replay_inspect, ["GET"]),
     ("/api/v1/replay/bookmarks", api_replay_bookmarks, ["GET"]),
     ("/api/v1/replay/bookmarks", api_replay_bookmark_create, ["POST"]),
     ("/api/v1/replay/bookmarks/{end}", api_replay_bookmark_delete, ["DELETE"]),
@@ -1313,6 +1414,8 @@ for _path, _endpoint, _methods in (
     ("/api/v1/decisions/{decision_id}/reject", api_decisions_reject, ["POST"]),
     ("/api/v1/decisions/{decision_id}/execute", api_decisions_execute, ["POST"]),
     ("/api/v1/stream", api_stream, ["GET"]),
+    ("/api/v1/stream/health", api_stream_health, ["GET"]),
+    ("/api/v1/stream/fallback", api_stream_fallback, ["GET"]),
 ):
     app.add_api_route(_path, _endpoint, methods=_methods, include_in_schema=True)
 
