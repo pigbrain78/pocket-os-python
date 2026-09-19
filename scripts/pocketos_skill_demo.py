@@ -10,11 +10,12 @@ from pathlib import Path
 
 BASE = os.environ.get("POCKETOS_BASE_URL", "https://pocketos-canonical-api.onrender.com").rstrip("/")
 OUT = Path(__file__).with_name("pocketos_skill_demo_results.json")
+REQUEST_TIMEOUT = float(os.environ.get("POCKETOS_REQUEST_TIMEOUT", "15.0"))
 ADMIN = {"username": "admin", "password": "demo"}
 OBSERVER = {"username": "observer", "password": "demo"}
 
 
-def request(method: str, path: str, token: str | None = None, payload: dict | None = None, timeout: float = 15.0) -> tuple[int, dict]:
+def request(method: str, path: str, token: str | None = None, payload: dict | None = None, timeout: float = REQUEST_TIMEOUT) -> tuple[int, dict]:
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

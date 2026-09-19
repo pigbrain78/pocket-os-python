@@ -1314,6 +1314,9 @@ for _path, _endpoint, _methods in (
     ("/api/v1/shadow", api_shadow, ["GET"]),
     ("/api/v1/decisions", api_decisions, ["GET"]),
     ("/api/v1/decisions/{decision_id}", api_decision_detail, ["GET"]),
+    # Compatibility alias for clients that already use the unversioned
+    # mutation surface (/api/decisions/{decision_id}/...).
+    ("/api/decisions/{decision_id}", api_decision_detail, ["GET"]),
     ("/api/v1/login", api_login, ["POST"]),
     ("/api/v1/session/me", api_session_me, ["GET"]),
     ("/api/v1/logout", api_logout, ["POST"]),
