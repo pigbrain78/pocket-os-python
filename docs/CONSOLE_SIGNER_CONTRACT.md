@@ -15,6 +15,8 @@ PocketOS remains the governance authority. The Cognitive Twin informs, the AI Sh
 | Signer endpoint | `POCKETOS_CONSOLE_SIGNER_URL` | Yes |
 | Authentication secret | `POCKETOS_CONSOLE_SIGNER_TOKEN` | Yes; Render secret only |
 | Operational kill switch | `POCKETOS_PRODUCTION_SIGNING_ENABLED=1` | Yes, explicit operator action |
+| Runtime environment | `POCKETOS_RUNTIME_ENV` (or `POCKETOS_ENV`) | Yes; must be `production` for off-box production signing |
+| Sandbox test signer | `POCKETOS_COUNCIL_TEST_SIGNER_ENABLED=1` (or legacy `POCKETOS_COUNCIL_DEMO_SIGNING=1`) | Required in sandbox/dev/test when council-sign route is exercised |
 | Algorithm | Supplied by signer operator | Yes |
 | Key identifiers | Supplied by signer operator | Yes |
 | Verification material | Active public keys or equivalent | Yes |
@@ -64,3 +66,8 @@ Timeouts and unknown responses return no signature. Signing requests must use de
 ## Readiness gate
 
 Before setting `POCKETOS_PRODUCTION_SIGNING_ENABLED=1`, verify the positive and negative signature cases, signer identity, key rotation behavior, timeout behavior, outage recovery, no-secret logging, exact production CORS origins, ledger integrity, and the complete backend/mobile test suites.
+
+## Migration notes
+
+- Non-production environments should explicitly set `POCKETOS_RUNTIME_ENV=sandbox` (or `POCKETOS_ENV=sandbox`) and enable `POCKETOS_COUNCIL_TEST_SIGNER_ENABLED=1` for deterministic local council signatures.
+- Production signing is now fail-closed outside `production` runtime mode even if `POCKETOS_PRODUCTION_SIGNING_ENABLED=1` is set.

@@ -94,6 +94,13 @@ def _provenance(seq: int) -> str:
     return f"ledger#{seq}"
 
 
+def _memory_domain_claim(text: str) -> tuple[str, str]:
+    if ":" not in text:
+        return "", text.strip()
+    key, value = text.split(":", 1)
+    return key.strip().lower().replace(" ", "_"), value.strip()
+
+
 def _observe(records: list[dict[str, Any]]) -> list[TwinItem]:
     """Map recent ledger events into OBSERVED items (never inferred)."""
     items: list[TwinItem] = []
@@ -149,6 +156,7 @@ def _focus(records: list[dict[str, Any]]) -> TwinItem:
 def _memories(records: list[dict[str, Any]]) -> tuple[list[TwinItem], list[TwinItem]]:
     verified: list[TwinItem] = []
     uncertain: list[TwinItem] = []
+    conflicts: dict[str, list[dict[str, Any]]] = {}
     for i, r in enumerate(records):
         if r.get("event") != "memory.created":
             continue
@@ -156,15 +164,49 @@ def _memories(records: list[dict[str, Any]]) -> tuple[list[TwinItem], list[TwinI
         seq = _seq_of(r, i)
         text = payload.get("title") or "(untitled memory)"
         if _is_tension(r):
-            uncertain.append(TwinItem(
-                text=f"conflicting claim: {text}",
-                epistemic=UNCERTAIN, confidence=0.5,
-                evidence=(seq,), provenance=_provenance(seq),
-            ))
+            domain, claim = _memory_domain_claim(text)
+            confidence = float(payload.get("confidence", 0.5) or 0.5)
+            conflicts.setdefault(domain or "__general__", []).append({
+                "seq": seq,
+                "timestamp": int(r.get("timestamp") or 0),
+                "claim": claim,
+                "raw": text,
+                "confidence": confidence,
+                "supersedes": payload.get("supersedes") or payload.get("supersedes_seq"),
+            })
         else:
             verified.append(TwinItem(
                 text=text, epistemic=VERIFIED, confidence=0.98,
                 evidence=(seq,), provenance=_provenance(seq),
+            ))
+    for domain, claims in conflicts.items():
+        claim_seqs = {c["seq"] for c in claims}
+        winner = max(
+            claims,
+            key=lambda c: (
+                1 if c.get("supersedes") in claim_seqs else 0,
+                c["seq"],
+                c["timestamp"],
+                c["confidence"],
+            ),
+        )
+        label = domain.replace("_", " ") if domain != "__general__" else "memory"
+        verified.append(TwinItem(
+            text=f"resolved claim: {label}: {winner['claim']}",
+            epistemic=VERIFIED,
+            confidence=min(0.99, max(0.55, winner["confidence"])),
+            evidence=tuple(sorted(c["seq"] for c in claims)),
+            provenance=_provenance(winner["seq"]),
+        ))
+        for claim in sorted(claims, key=lambda c: c["seq"]):
+            if claim["seq"] == winner["seq"]:
+                continue
+            uncertain.append(TwinItem(
+                text=f"historical conflicting claim: {label}: {claim['claim']}",
+                epistemic=UNCERTAIN,
+                confidence=0.25,
+                evidence=(claim["seq"],),
+                provenance=_provenance(claim["seq"]),
             ))
     return verified, uncertain
 

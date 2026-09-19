@@ -108,6 +108,20 @@ def test_twin_focus_is_hedged_not_asserted():
     assert "appears" in cs.current_focus.text.lower()
 
 
+def test_twin_conflict_resolution_is_deterministic_with_history():
+    cs = cognitive_state(_records())
+    resolved = [m for m in cs.relevant_memories if m.text.startswith("resolved claim: system state:")]
+    historical = [m for m in cs.relevant_memories if m.text.startswith("historical conflicting claim: system state:")]
+    assert len(resolved) == 1
+    assert resolved[0].text.endswith("saas")
+    assert list(resolved[0].evidence) == [1, 2, 3, 4]
+    assert [m.text for m in historical] == [
+        "historical conflicting claim: system state: web",
+        "historical conflicting claim: system state: saas",
+        "historical conflicting claim: system state: web",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # AI Shadow
 # ---------------------------------------------------------------------------

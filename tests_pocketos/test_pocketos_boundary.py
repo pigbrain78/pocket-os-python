@@ -132,6 +132,46 @@ def test_observer_cannot_ratify_normalized_403():
     assert r.json()["error"]["code"] == "AUTHORIZATION_DENIED"
 
 
+def test_council_sign_succeeds_with_sandbox_test_signer():
+    tok = _login()
+    did = "D-WORKSPACE-1003"
+    client.post(f"/api/v1/decisions/{did}/council-approve", headers=_h(tok))
+    old = A.council_gate._TEST_SIGNER_ENABLED
+    old_env = A.council_gate._RUNTIME_ENV
+    try:
+        A.council_gate._RUNTIME_ENV = "sandbox"
+        A.council_gate._TEST_SIGNER_ENABLED = True
+        r = client.post(f"/api/v1/decisions/{did}/council-sign?member=council-a", headers=_h(tok))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert body["signature"]
+    finally:
+        A.council_gate._TEST_SIGNER_ENABLED = old
+        A.council_gate._RUNTIME_ENV = old_env
+
+
+def test_council_sign_fails_clearly_when_sandbox_signer_disabled():
+    tok = _login()
+    did = "D-WORKSPACE-1003"
+    client.post(f"/api/v1/decisions/{did}/council-approve", headers=_h(tok))
+    old = A.council_gate._TEST_SIGNER_ENABLED
+    old_demo = A.council_gate._DEMO_SIGNING
+    old_env = A.council_gate._RUNTIME_ENV
+    try:
+        A.council_gate._RUNTIME_ENV = "sandbox"
+        A.council_gate._TEST_SIGNER_ENABLED = False
+        A.council_gate._DEMO_SIGNING = False
+        r = client.post(f"/api/v1/decisions/{did}/council-sign?member=council-a", headers=_h(tok))
+        assert r.status_code == 403
+        msg = r.json().get("error", {}).get("message") or r.json().get("detail", "")
+        assert "sandbox/test signer is disabled" in msg
+    finally:
+        A.council_gate._TEST_SIGNER_ENABLED = old
+        A.council_gate._DEMO_SIGNING = old_demo
+        A.council_gate._RUNTIME_ENV = old_env
+
+
 def test_unknown_resource_returns_normalized_404():
     r = client.get("/api/v1/memory/99999")
     assert r.status_code == 404
@@ -317,6 +357,22 @@ def test_live_v1_endpoints_satisfy_client_contract():
         missing = [k for k in required if k not in body]
         assert not missing, f"live {path} violates client contract: missing {missing}"
         assert "api_version" in body and "schema_version" in body, f"live {path} missing version envelope"
+
+
+def test_sse_fallback_poll_receives_events_with_advisory_authority():
+    tok = _login()
+    baseline = client.get("/api/v1/stream/health").json()["stream"]
+    assert baseline["active_path"] in {"live-sse", "fallback-poll"}
+    before = client.get("/api/state").json()["record_count"]
+    r = client.post("/api/v1/decisions/propose", json={"title": "fallback stream probe"}, headers=_h(tok))
+    assert r.status_code == 200
+    poll = client.get("/api/v1/stream/fallback", params={"since": before, "limit": 10})
+    assert poll.status_code == 200
+    events = poll.json()["events"]
+    assert any(e.get("type") == "decision.proposed" for e in events)
+    for ev in events:
+        assert ev["authority"] == "NONE"
+        assert ev["status"] == "advisory"
 
 
 def test_ios_codable_models_match_live_contract():
