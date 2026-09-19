@@ -2,13 +2,22 @@ services:
   - type: web
     name: pocketos-canonical-api
     runtime: python
+    branch: master
     plan: free
     region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn scripts.pocketos_demo.app:app --host 0.0.0.0 --port $PORT
     autoDeploy: true
     envVars:
-      - key: POCKETOS_COUNCIL_DEMO_SIGNING
-        value: "0"
+      - key: POCKETOS_CONSOLE_SIGNER_URL
+        sync: false
+      - key: POCKETOS_CONSOLE_SIGNER_TOKEN
+        sync: false
       - key: POCKETOS_PRODUCTION_SIGNING_ENABLED
         value: "0"
+      - key: POCKETOS_COUNCIL_DEMO_SIGNING
+        value: "0"
+      - key: POCKETOS_CORS_ORIGIN_REGEX
+        sync: false
+      - key: POCKETOS_CORS_ORIGINS
+        sync: false
