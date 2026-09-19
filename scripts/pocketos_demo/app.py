@@ -522,9 +522,10 @@ class LoginBody(BaseModel):
 
 class RatifyBody(BaseModel):
     claimed_authority: str = "NONE"  # ignored — never authoritative
-    # Council signatures: {member: hmac_signature}. The ledger event is emitted
-    # ONLY when a threshold of distinct members verifies under active keys.
-    signatures: dict[str, str] = {}
+    # Council signatures are {member: {algorithm, key_id, signature}} in
+    # production Ed25519 mode. The ledger event is emitted ONLY when a
+    # threshold of distinct members verifies under active public keys.
+    signatures: dict[str, Any] = {}
 
 
 class ExecuteBody(BaseModel):
@@ -1211,10 +1212,11 @@ def api_decisions_council_approve(decision_id: str, request: Request) -> dict[st
 
 @app.post("/api/decisions/{decision_id}/council-sign")
 def api_decisions_council_sign(decision_id: str, request: Request) -> dict[str, Any]:
-    """Request a council member signature over a decision (demo assembly of a
-    quorum). Requires COUNCIL permission. Keys never leave the server; returns
-    the HMAC signature for the named member so a session can assemble a
-    threshold. Production members would sign off-box and submit signatures only.
+    """Request a council member signature over a decision.
+
+    Demo mode returns a local HMAC envelope for the browser harness; production
+    mode returns an Ed25519 envelope from the off-box Console Signer. Private
+    signing keys never leave their respective signing service.
     """
     _require_permission(_bearer(request), PERM_COUNCIL)
     _sync_decision_state()

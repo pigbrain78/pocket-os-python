@@ -21,7 +21,8 @@ PRODUCTION KEY ISOLATION
 ------------------------
 In production, raw council member signing keys are NOT held in the Pocket OS
 runtime and are NEVER reachable through an HTTP route. Pocket OS holds only the
-verification material (the active key bytes used to check HMAC signatures) and
+ verification material (active Ed25519 public keys in production; demo HMAC keys
+ remain local-only) and
 relies on each council member signing OFF-BOX.
 
 Signing keys are injected only when the process is explicitly running the DEMO
@@ -39,6 +40,7 @@ import urllib.request
 from typing import Any, Optional
 
 from . import council_ratification as council
+from . import ed25519_verifier
 
 
 # ---------------------------------------------------------------------------
@@ -50,12 +52,11 @@ from . import council_ratification as council
 # usable out of the box, while allowing production deployments to disable the
 # in-process signer explicitly.
 _DEMO_SIGNING = os.environ.get("POCKETOS_COUNCIL_DEMO_SIGNING", "0") == "1"
-_TEST_SIGNER_ENABLED = os.environ.get("POCKETOS_COUNCIL_TEST_SIGNER_ENABLED", "0") == "1"
 _PRODUCTION_SIGNING_ENABLED = os.environ.get("POCKETOS_PRODUCTION_SIGNING_ENABLED", "0") == "1"
 _CONSOLE_SIGNER_URL = os.environ.get("POCKETOS_CONSOLE_SIGNER_URL", "").strip().rstrip("/")
 _CONSOLE_SIGNER_TOKEN = os.environ.get("POCKETOS_CONSOLE_SIGNER_TOKEN", "").strip()
-_RUNTIME_ENV = os.environ.get("POCKETOS_RUNTIME_ENV", os.environ.get("POCKETOS_ENV", "production")).strip().lower()
-_NON_PROD_ENVS = frozenset({"sandbox", "dev", "development", "test", "local"})
+_SIGNATURE_ALGORITHM = os.environ.get("POCKETOS_COUNCIL_SIGNATURE_ALGORITHM", "HMAC-SHA256").strip()
+_PUBLIC_KEYS_JSON = os.environ.get("POCKETOS_COUNCIL_PUBLIC_KEYS_JSON", "")
 
 # Deterministic demo seeds (used ONLY in demo signing mode). In production these
 # are replaced by off-box member keys; Pocket OS never sees the raw signing key.
@@ -69,6 +70,16 @@ _DEMO_KEYS: dict[str, bytes] = {
 # seeded demo keys; in production it is loaded from protected config (the active
 # public key material per member). Either way, these are verification keys only.
 REGISTRY: council.Registry = council.new_registry(_DEMO_KEYS)
+try:
+    ED25519_REGISTRY = (
+        ed25519_verifier.load_registry(_PUBLIC_KEYS_JSON, sorted(REGISTRY))
+        if _SIGNATURE_ALGORITHM == ed25519_verifier.ALGORITHM
+        else {}
+    )
+    _PUBLIC_KEY_REGISTRY_ERROR = None
+except ValueError as exc:
+    ED25519_REGISTRY = {}
+    _PUBLIC_KEY_REGISTRY_ERROR = str(exc)
 
 # State string a decision is ratified INTO. Must be allowlisted by the contract.
 RATIFIED_STATE: str = "RATIFIED"
@@ -96,8 +107,10 @@ def active_members() -> list[str]:
 
 
 def signing_enabled() -> bool:
-    """True when deterministic local/test signing is enabled for non-prod."""
-    return _DEMO_SIGNING or _TEST_SIGNER_ENABLED
+    """True only when the process is the demo signing service. In production
+    this is False, so /council-sign is disabled and no signing key is reachable
+    over HTTP."""
+    return _DEMO_SIGNING
 
 
 def console_signer_configured() -> bool:
@@ -109,33 +122,25 @@ def production_signing_enabled() -> bool:
     return _PRODUCTION_SIGNING_ENABLED
 
 
-def non_production_env() -> bool:
-    return _RUNTIME_ENV in _NON_PROD_ENVS
-
-
 def console_signer_status() -> dict[str, Any]:
-    production_allowed = production_signing_enabled() and not non_production_env()
-    mode = "console-signer" if (production_allowed and console_signer_configured()) else (
-        "sandbox-test" if signing_enabled() else "off-box-unconfigured"
-    )
     return {
         "configured": console_signer_configured(),
-        "mode": mode,
+        "mode": "console-signer" if console_signer_configured() else ("demo" if _DEMO_SIGNING else "off-box-unconfigured"),
         "private_keys_in_pocketos": False,
         "production_signing_enabled": production_signing_enabled(),
-        "production_signing_allowed": production_allowed,
-        "runtime_env": _RUNTIME_ENV,
-        "test_signer_enabled": signing_enabled(),
+        "signature_algorithm": _SIGNATURE_ALGORITHM,
+        "public_key_registry_configured": bool(ED25519_REGISTRY) if _SIGNATURE_ALGORITHM == ed25519_verifier.ALGORITHM else True,
+        "public_key_registry_error": _PUBLIC_KEY_REGISTRY_ERROR,
     }
 
 
-def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[str]:
+def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[dict[str, str]]:
     """Ask the configured off-box Console Signer for a signature.
 
     PocketOS never receives or stores signing keys. Any missing configuration,
     transport failure, malformed response, or signer error fails closed.
     """
-    if not production_signing_enabled() or non_production_env() or not console_signer_configured():
+    if not production_signing_enabled() or not console_signer_configured():
         return None
     payload = json.dumps({"member": member, "decision_id": candidate_id, "state": state}).encode()
     request = urllib.request.Request(
@@ -148,7 +153,13 @@ def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[str
         with urllib.request.urlopen(request, timeout=8) as response:
             body = json.loads(response.read().decode())
         signature = body.get("signature")
-        return signature if isinstance(signature, str) and signature.strip() else None
+        key_id = body.get("key_id")
+        algorithm = body.get("algorithm")
+        if not all(isinstance(value, str) and value.strip() for value in (signature, key_id, algorithm)):
+            return None
+        if algorithm != _SIGNATURE_ALGORITHM:
+            return None
+        return {"algorithm": algorithm, "key_id": key_id, "signature": signature}
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         return None
 
@@ -162,7 +173,7 @@ def sign_for_member(member: str, candidate_id: str, state: str) -> Optional[str]
     signatures; raw signing keys never reside in the Pocket OS runtime or
     behind an HTTP route.
     """
-    if not signing_enabled():
+    if not _DEMO_SIGNING:
         return None
     ak = council.active_key(REGISTRY, member)
     if ak is None:
@@ -171,35 +182,25 @@ def sign_for_member(member: str, candidate_id: str, state: str) -> Optional[str]
     return council.sign(candidate_id, state, member, key)
 
 
-def signer_unavailable_message() -> str:
-    """Actionable reason when /council-sign cannot produce a signature."""
-    if non_production_env() and not signing_enabled():
-        return (
-            "sandbox/test signer is disabled; set "
-            "POCKETOS_COUNCIL_TEST_SIGNER_ENABLED=1 (or POCKETOS_COUNCIL_DEMO_SIGNING=1)"
-        )
-    if non_production_env() and production_signing_enabled():
-        return "production signing is blocked outside production runtime environments"
-    if production_signing_enabled() and not console_signer_configured():
-        return "production signing is enabled but Console Signer configuration is missing"
-    return "production signing is disabled or Console Signer is unavailable"
-
-
 def verify_quorum(candidate_id: str, state: str,
-                  signatures: dict[str, str]) -> bool:
+                  signatures: dict[str, Any]) -> bool:
     """Authoritative quorum check against the live registry. This is the ONLY
     thing that may authorize a `decision.ratified` event."""
+    if _SIGNATURE_ALGORITHM == ed25519_verifier.ALGORITHM:
+        return len(ed25519_verifier.verified_members(candidate_id, state, signatures, ED25519_REGISTRY)) >= council.QUORUM
     return council.verify_ratification(candidate_id, state, signatures, REGISTRY)
 
 
 def validate_signatures(candidate_id: str, state: str,
-                        signatures: dict[str, str]) -> dict[str, Any]:
+                        signatures: dict[str, Any]) -> dict[str, Any]:
     """Per-signature validation result for diagnostics (never authority)."""
     out: dict[str, Any] = {"state_allowed": state in council.ALLOWED_STATES}
     sigs = signatures or {}
     for member in active_members():
-        out[member] = council.verify(candidate_id, state, member,
-                                     sigs.get(member, ""), REGISTRY)
+        if _SIGNATURE_ALGORITHM == ed25519_verifier.ALGORITHM:
+            out[member] = ed25519_verifier.verify(candidate_id, state, member, sigs.get(member), ED25519_REGISTRY)
+        else:
+            out[member] = council.verify(candidate_id, state, member, sigs.get(member, ""), REGISTRY)
     out["distinct_verified"] = sum(1 for m in active_members() if out.get(m))
     out["quorum"] = council.QUORUM
     out["quorum_met"] = out["distinct_verified"] >= council.QUORUM
@@ -207,7 +208,7 @@ def validate_signatures(candidate_id: str, state: str,
 
 
 def seal_ratification(candidate_id: str, state: str,
-                      signatures: dict[str, str],
+                      signatures: dict[str, Any],
                       ledger: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """Seal a verified ratification as a hash-chained block.
 
@@ -218,7 +219,11 @@ def seal_ratification(candidate_id: str, state: str,
     ``ledger`` is the current list of previously-sealed blocks (in order). It
     is derived by the caller from the historical `decision.ratified` records.
     """
-    ok, new_ledger = council.ratify(candidate_id, state, signatures, REGISTRY, ledger)
+    if _SIGNATURE_ALGORITHM == ed25519_verifier.ALGORITHM:
+        verified = ed25519_verifier.verified_members(candidate_id, state, signatures, ED25519_REGISTRY)
+        ok, new_ledger = council.ratify_verified_members(candidate_id, state, verified, ledger)
+    else:
+        ok, new_ledger = council.ratify(candidate_id, state, signatures, REGISTRY, ledger)
     if not ok:
         return None
     return new_ledger[-1]

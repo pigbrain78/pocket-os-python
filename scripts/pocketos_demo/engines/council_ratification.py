@@ -182,6 +182,32 @@ def ratify(candidate_id: str, state: str, signatures: dict[str, str],
     return True, ledger + [block]
 
 
+def ratify_verified_members(candidate_id: str, state: str,
+                            verified_members: set[str], ledger: list[dict]) -> tuple[bool, list[dict]]:
+    """GOVERNED COMMIT for an external verifier.
+
+    The caller must supply the distinct members whose signatures were already
+    verified against the active public-key registry. This keeps the ledger
+    sealing primitive independent of the cryptographic algorithm while still
+    requiring the same state allowlist and quorum threshold.
+    """
+    if state not in ALLOWED_STATES or len(verified_members) < QUORUM:
+        return False, ledger
+    ratifiers = sorted(verified_members)
+    prev_hash = ledger[-1]["hash"] if ledger else "GENESIS"
+    block = {
+        "index": len(ledger),
+        "prev_hash": prev_hash,
+        "candidate_id": candidate_id,
+        "state": state,
+        "ratifiers": ratifiers,
+        "timestamp": int(time.time()),
+        "hash": "",
+    }
+    block["hash"] = _block_hash(block)
+    return True, ledger + [block]
+
+
 def verify_ledger(ledger: list[dict]) -> bool:
     """Recompute every block hash and walk the prev_hash chain.
 

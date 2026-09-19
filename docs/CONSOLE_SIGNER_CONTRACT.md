@@ -14,6 +14,8 @@ PocketOS remains the governance authority. The Cognitive Twin informs, the AI Sh
 |---|---|---|
 | Signer endpoint | `POCKETOS_CONSOLE_SIGNER_URL` | Yes |
 | Authentication secret | `POCKETOS_CONSOLE_SIGNER_TOKEN` | Yes; Render secret only |
+| Verification algorithm | `POCKETOS_COUNCIL_SIGNATURE_ALGORITHM=Ed25519` | Yes in production |
+| Active public keys | `POCKETOS_COUNCIL_PUBLIC_KEYS_JSON` | Yes; public material only |
 | Operational kill switch | `POCKETOS_PRODUCTION_SIGNING_ENABLED=1` | Yes, explicit operator action |
 | Runtime environment | `POCKETOS_RUNTIME_ENV` (or `POCKETOS_ENV`) | Yes; must be `production` for off-box production signing |
 | Sandbox test signer | `POCKETOS_COUNCIL_TEST_SIGNER_ENABLED=1` (or legacy `POCKETOS_COUNCIL_DEMO_SIGNING=1`) | Required in sandbox/dev/test when council-sign route is exercised |
@@ -44,11 +46,13 @@ The current adapter accepts a non-empty JSON string field:
 
 ```json
 {
-  "signature": "..."
+  "algorithm": "Ed25519",
+  "key_id": "council-a:v1",
+  "signature": "<base64-encoded-64-byte-signature>"
 }
 ```
 
-A production deployment must additionally verify the returned signature against the expected key, algorithm, canonical message, domain, and key identifier before sealing a ratification. HTTP success alone is not cryptographic proof.
+A production deployment verifies the returned signature against the expected public key, algorithm, canonical message, and key identifier before sealing a ratification. HTTP success alone is not cryptographic proof. The public-key registry is a JSON object keyed by council member, for example `{"council-a":{"key_id":"council-a:v1","public_key":"<base64-32-byte-public-key>"}}`; all active members must be present or verification fails closed.
 
 ## Fail-closed behavior
 
