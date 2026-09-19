@@ -65,6 +65,16 @@ the transport.
   (kept so the existing UI keeps working; new code should use the domain
   methods above)
 
+### v1 mobile starter slice (one screen, one action)
+
+The first mobile-integrated vertical is intentionally narrow:
+
+1. `GET /api/v1/status` to render server-authoritative health + ledger status.
+2. `POST /api/v1/decisions/propose` to submit one governance-bound action.
+
+This keeps v1 to a single read projection plus a single command while preserving
+the constitutional rule: clients can propose, but cannot execute directly.
+
 ---
 
 ## 3. API domains (routes)

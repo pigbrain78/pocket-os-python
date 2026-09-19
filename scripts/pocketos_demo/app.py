@@ -618,6 +618,26 @@ def api_state() -> dict[str, Any]:
     }
 
 
+@app.get("/api/v1/status")
+def api_v1_status() -> dict[str, Any]:
+    """Canonical lightweight status projection for mobile/web clients."""
+    v = _verification_view()
+    return {
+        "request_id": secrets.token_urlsafe(12),
+        "api_version": "1",
+        "schema_version": "v2",
+        "status": "healthy",
+        "ledger": {
+            "integrity": v["integrity"],
+            "valid": v["valid"],
+            "broken_seq": v["broken_seq"],
+        },
+        "records": len(STATE),
+        "revision": STATE.revision(),
+        "server_time": int(time.time()),
+    }
+
+
 @app.get("/api/v1/evidence/traits")
 def api_trait_evidence() -> dict[str, Any]:
     """Return server-owned epistemic context for the six cockpit traits.
