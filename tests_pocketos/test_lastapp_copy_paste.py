@@ -75,6 +75,48 @@ def test_council_routes_support_evaluate_and_ratify(client):
     assert state.get_json()["canonical_state"] == "RATIFIED"
 
 
+def test_council_routes_reject_invalid_auth_and_stale_hash(client):
+    http, _ = client
+    proposal = http.post(
+        "/api/pocket/council/proposals",
+        json={
+            "decision_id": "DEC-77",
+            "content": {"title": "Review"},
+            "originating_source": "human",
+            "requested_capability": "deploy",
+        },
+    )
+    assert proposal.status_code == 201
+    proposal_hash = proposal.get_json()["proposal"]["content_hash"]
+    evaluation = http.post("/api/pocket/council/DEC-77/evaluate", json={"policy": {}, "evidence": {}})
+    assert evaluation.status_code == 200
+
+    bad_auth = http.post(
+        "/api/pocket/council/DEC-77/ratify",
+        json={"principal": "alice", "proposal_hash": proposal_hash},
+        headers={"Authorization": "******"},
+    )
+    assert bad_auth.status_code == 403
+    assert bad_auth.get_json()["error"] == "UNVERIFIED_HUMAN_AUTHORITY"
+
+    auth = http.post("/api/pocket/authenticate", json={"principal": "alice", "credential": "ok"})
+    token = auth.get_json()["session_token"]
+    stale = http.post(
+        "/api/pocket/council/DEC-77/ratify",
+        json={"principal": "alice", "proposal_hash": "not-the-real-hash"},
+        headers={"Authorization": "Bearer " + token},
+    )
+    assert stale.status_code == 409
+    assert stale.get_json()["error"] == "PROPOSAL_HASH_MISMATCH"
+
+
+def test_council_state_unknown_decision_is_not_found(client):
+    http, _ = client
+    response = http.get("/api/pocket/council/UNKNOWN/state")
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "UNKNOWN_DECISION"
+
+
 def test_state_hash_stays_json_serializable_after_evaluation():
     service = lastapp.PocketOSService(human_principals={"alice"}, human_credentials={"alice": "ok"})
     proposal = service.council_propose(

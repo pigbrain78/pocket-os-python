@@ -346,14 +346,15 @@ class CanonicalCouncil:
 
 MAX_FILE_BYTES = 25 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".png", ".jpg", ".jpeg"}
-ALLOWED_MIME_TYPES = {
-    "application/json",
-    "application/pdf",
-    "text/csv",
-    "text/plain",
-    "text/markdown",
-    "image/png",
-    "image/jpeg",
+ALLOWED_MEDIA_BY_EXTENSION = {
+    ".txt": {"text/plain"},
+    ".md": {"text/markdown", "text/plain"},
+    ".csv": {"text/csv", "text/plain"},
+    ".json": {"application/json", "text/plain"},
+    ".pdf": {"application/pdf"},
+    ".png": {"image/png"},
+    ".jpg": {"image/jpeg"},
+    ".jpeg": {"image/jpeg"},
 }
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -363,27 +364,27 @@ def ingest_file(data, name, media_type, source, destination):
     clean = _SAFE_NAME.sub("_", clean).strip("._ ")[:180]
     if not clean:
         raise FileIntakeError("INVALID_FILENAME")
+    extension = Path(clean).suffix.lower()
     media_type = (media_type or mimetypes.guess_type(clean)[0] or "application/octet-stream").lower()
-    if Path(clean).suffix.lower() not in ALLOWED_EXTENSIONS:
+    if extension not in ALLOWED_EXTENSIONS:
         raise FileIntakeError("UNSUPPORTED_EXTENSION")
-    if media_type not in ALLOWED_MIME_TYPES and not media_type.startswith(("text/", "image/")):
+    if media_type not in ALLOWED_MEDIA_BY_EXTENSION[extension]:
         raise FileIntakeError("UNSUPPORTED_MEDIA_TYPE")
     if source not in {"local", "icloud"}:
         raise FileIntakeError("INVALID_SOURCE")
     if len(data) > MAX_FILE_BYTES:
         raise FileIntakeError("FILE_TOO_LARGE")
-    destination = Path(destination)
+    destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    temp = destination / f".{clean}.{secrets.token_hex(8)}.part"
     final = destination / clean
-    if final.exists():
-        raise FileIntakeError("FILE_ALREADY_EXISTS")
     try:
-        with temp.open("xb") as stream:
+        fd = os.open(final, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
             stream.write(data)
-        temp.replace(final)
+    except FileExistsError as exc:
+        raise FileIntakeError("FILE_ALREADY_EXISTS") from exc
     except Exception:
-        temp.unlink(missing_ok=True)
+        final.unlink(missing_ok=True)
         raise
     return {
         "name": clean,
@@ -531,20 +532,21 @@ def bearer_token():
 
 
 def error_response(exc):
+    message = exc.args[0] if exc.args else ""
     if isinstance(exc, FileIntakeError):
         code = 422
     elif isinstance(exc, AuthorityError):
         code = 403
     elif isinstance(exc, (DuplicateEvent, InvalidTransition, StaleDecision)):
         code = 409
+    elif isinstance(exc, CouncilError) and message == "UNKNOWN_DECISION":
+        code = 404
     else:
         code = 400
     if isinstance(exc, KeyError):
         error = "MISSING_REQUIRED_FIELD"
-    elif isinstance(exc, (CouncilError, FileIntakeError)):
-        error = str(exc) or "INVALID_REQUEST"
-    elif isinstance(exc, ValueError) and str(exc).isupper():
-        error = str(exc)
+    elif isinstance(message, str) and message.isupper():
+        error = message
     else:
         error = "INVALID_REQUEST"
     return jsonify(error=error), code
