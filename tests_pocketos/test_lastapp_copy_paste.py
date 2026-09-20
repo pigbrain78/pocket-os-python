@@ -110,6 +110,29 @@ def test_council_routes_reject_invalid_auth_and_stale_hash(client):
     assert stale.get_json()["error"] == "PROPOSAL_HASH_MISMATCH"
 
 
+def test_council_routes_require_evaluation_before_ratify(client):
+    http, _ = client
+    auth = http.post("/api/pocket/authenticate", json={"principal": "alice", "credential": "ok"})
+    token = auth.get_json()["session_token"]
+    proposal = http.post(
+        "/api/pocket/council/proposals",
+        json={
+            "decision_id": "DEC-55",
+            "content": {"title": "Too early"},
+            "originating_source": "human",
+            "requested_capability": "deploy",
+        },
+    )
+    proposal_hash = proposal.get_json()["proposal"]["content_hash"]
+    response = http.post(
+        "/api/pocket/council/DEC-55/ratify",
+        json={"principal": "alice", "proposal_hash": proposal_hash},
+        headers={"Authorization": "Bearer " + token},
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "HUMAN_RATIFICATION_REQUIRED"
+
+
 def test_council_state_unknown_decision_is_not_found(client):
     http, _ = client
     response = http.get("/api/pocket/council/UNKNOWN/state")
@@ -175,3 +198,13 @@ def test_file_intake_rejects_unsupported_extension(client):
 
     assert response.status_code == 422
     assert response.get_json()["error"] == "UNSUPPORTED_EXTENSION"
+
+
+def test_file_intake_rejects_invalid_base64(client):
+    http, _ = client
+    response = http.post(
+        "/api/pocket/files/intake",
+        json={"name": "notes.txt", "media_type": "text/plain", "source": "local", "data_b64": "%%%"},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "INVALID_BASE64"

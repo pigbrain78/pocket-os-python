@@ -360,6 +360,10 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def ingest_file(data, name, media_type, source, destination):
+    return _store_file_in_directory(data, name, media_type, source, Path(destination).resolve())
+
+
+def _store_file_in_directory(data, name, media_type, source, destination: Path):
     clean = Path(name or "").name
     clean = _SAFE_NAME.sub("_", clean).strip("._ ")[:180]
     if not clean:
@@ -374,11 +378,15 @@ def ingest_file(data, name, media_type, source, destination):
         raise FileIntakeError("INVALID_SOURCE")
     if len(data) > MAX_FILE_BYTES:
         raise FileIntakeError("FILE_TOO_LARGE")
-    destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    final = destination / clean
+    final = (destination / clean).resolve(strict=False)
+    if final.parent != destination:
+        raise FileIntakeError("INVALID_FILENAME")
     try:
-        fd = os.open(final, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(final, flags, 0o600)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
     except FileExistsError as exc:
@@ -489,7 +497,7 @@ class PocketOSService:
         }
 
     def intake(self, data, name, media_type, source):
-        return ingest_file(data, name, media_type, source, self.upload_dir)
+        return _store_file_in_directory(data, name, media_type, source, Path(self.upload_dir).resolve())
 
     def diagnostics(self):
         return {
@@ -529,6 +537,23 @@ def bearer_token():
     if value.lower().startswith("bearer "):
         return value.split(None, 1)[1].strip()
     return ""
+
+
+def read_uploaded_file(uploaded) -> bytes:
+    length = uploaded.content_length
+    if length is not None and length > MAX_FILE_BYTES:
+        raise FileIntakeError("FILE_TOO_LARGE")
+    chunks = []
+    total = 0
+    while True:
+        chunk = uploaded.stream.read(min(1024 * 1024, MAX_FILE_BYTES - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_FILE_BYTES:
+            raise FileIntakeError("FILE_TOO_LARGE")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def error_response(exc):
@@ -615,7 +640,7 @@ def files_intake():
             uploaded = request.files["file"]
             payload = request.form
             result = service.intake(
-                uploaded.read(),
+                read_uploaded_file(uploaded),
                 uploaded.filename,
                 uploaded.mimetype,
                 payload.get("source", "local"),
