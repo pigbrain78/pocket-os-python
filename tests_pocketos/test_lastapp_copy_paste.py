@@ -60,7 +60,7 @@ def test_council_routes_support_evaluate_and_ratify(client):
     ratified = http.post(
         "/api/pocket/council/DEC-42/ratify",
         json={"principal": "alice", "proposal_hash": proposal_hash},
-        headers={"Authorization": f"******"},
+        headers={"Authorization": "Bearer " + token},
     )
     assert ratified.status_code == 200
     assert ratified.get_json()["canonical_state"] == "RATIFIED"
