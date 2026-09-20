@@ -1,4 +1,5 @@
 import base64
+from io import BytesIO
 
 import pytest
 
@@ -7,7 +8,11 @@ import LASTAPP_COPY_PASTE as lastapp
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    service = lastapp.PocketOSService(human_principals={"alice"}, upload_dir=str(tmp_path))
+    service = lastapp.PocketOSService(
+        human_principals={"alice"},
+        human_credentials={"alice": "ok"},
+        upload_dir=str(tmp_path),
+    )
     monkeypatch.setattr(lastapp, "service", service)
     lastapp.app.config.update(TESTING=True)
     with lastapp.app.test_client() as client:
@@ -71,7 +76,7 @@ def test_council_routes_support_evaluate_and_ratify(client):
 
 
 def test_state_hash_stays_json_serializable_after_evaluation():
-    service = lastapp.PocketOSService(human_principals={"alice"})
+    service = lastapp.PocketOSService(human_principals={"alice"}, human_credentials={"alice": "ok"})
     proposal = service.council_propose(
         {
             "decision_id": "DEC-100",
@@ -100,6 +105,21 @@ def test_file_intake_route_accepts_base64_payload(client, tmp_path):
     assert body["name"] == "notes.txt"
     assert body["size"] == 11
     assert (tmp_path / "notes.txt").read_text() == "hello world"
+
+
+def test_file_intake_route_accepts_multipart_upload(client, tmp_path):
+    http, _ = client
+
+    response = http.post(
+        "/api/pocket/files/intake",
+        data={"source": "local", "file": (BytesIO(b"image-bytes"), "photo.png")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["media_type"] == "image/png"
+    assert (tmp_path / "photo.png").read_bytes() == b"image-bytes"
 
 
 def test_file_intake_rejects_unsupported_extension(client):

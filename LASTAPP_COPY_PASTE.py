@@ -7,6 +7,8 @@ Run:
 
 Set POCKET_HUMANS to a comma-separated allow-list before production use, e.g.
     POCKET_HUMANS=alice,bob python LASTAPP_COPY_PASTE.py
+To enable ratification authentication, also set POCKET_HUMAN_CREDENTIALS, e.g.
+    POCKET_HUMAN_CREDENTIALS=alice:s3cret,bob:pa55 python LASTAPP_COPY_PASTE.py
 """
 from __future__ import annotations
 
@@ -181,12 +183,16 @@ class CouncilEvaluation:
 
 
 class HumanAuthority:
-    def __init__(self, principals):
+    def __init__(self, principals, credentials=None):
         self._principals = set(filter(None, principals))
+        self._credentials = {str(key): str(value) for key, value in (credentials or {}).items()}
         self._sessions = {}
 
     def authenticate(self, principal, credential):
-        if principal not in self._principals or not credential:
+        expected = self._credentials.get(principal)
+        if principal not in self._principals or not credential or expected is None:
+            raise AuthorityError("UNVERIFIED_HUMAN_AUTHORITY")
+        if not secrets.compare_digest(expected, str(credential)):
             raise AuthorityError("UNVERIFIED_HUMAN_AUTHORITY")
         token = secrets.token_urlsafe(24)
         self._sessions[token] = principal
@@ -340,7 +346,15 @@ class CanonicalCouncil:
 
 MAX_FILE_BYTES = 25 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".png", ".jpg", ".jpeg"}
-ALLOWED_MIME_TYPES = {"application/json", "application/pdf", "text/csv"}
+ALLOWED_MIME_TYPES = {
+    "application/json",
+    "application/pdf",
+    "text/csv",
+    "text/plain",
+    "text/markdown",
+    "image/png",
+    "image/jpeg",
+}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -360,8 +374,10 @@ def ingest_file(data, name, media_type, source, destination):
         raise FileIntakeError("FILE_TOO_LARGE")
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    temp = destination / ("." + clean + ".part")
+    temp = destination / f".{clean}.{secrets.token_hex(8)}.part"
     final = destination / clean
+    if final.exists():
+        raise FileIntakeError("FILE_ALREADY_EXISTS")
     try:
         with temp.open("xb") as stream:
             stream.write(data)
@@ -380,8 +396,8 @@ def ingest_file(data, name, media_type, source, destination):
 
 
 class PocketOSService:
-    def __init__(self, human_principals=None, upload_dir="uploads"):
-        self.council = CanonicalCouncil(HumanAuthority(human_principals or set()))
+    def __init__(self, human_principals=None, upload_dir="uploads", human_credentials=None):
+        self.council = CanonicalCouncil(HumanAuthority(human_principals or set(), human_credentials or {}))
         self.upload_dir = upload_dir
         self.capture_results = {}
         self.capture_events = []
@@ -471,8 +487,8 @@ class PocketOSService:
             "state_hash": self.council.state_hash(),
         }
 
-    def intake(self, data, name, media_type, source, destination=None):
-        return ingest_file(data, name, media_type, source, destination or self.upload_dir)
+    def intake(self, data, name, media_type, source):
+        return ingest_file(data, name, media_type, source, self.upload_dir)
 
     def diagnostics(self):
         return {
@@ -483,10 +499,20 @@ class PocketOSService:
         }
 
 
+def _parse_credential_map(value: str) -> dict[str, str]:
+    result = {}
+    for item in filter(None, (part.strip() for part in value.split(","))):
+        principal, separator, credential = item.partition(":")
+        if separator and principal and credential:
+            result[principal] = credential
+    return result
+
+
 app = Flask(__name__)
 service = PocketOSService(
     human_principals=set(filter(None, os.getenv("POCKET_HUMANS", "").split(","))),
     upload_dir=os.getenv("POCKET_UPLOAD_DIR", "uploads"),
+    human_credentials=_parse_credential_map(os.getenv("POCKET_HUMAN_CREDENTIALS", "")),
 )
 
 
@@ -513,7 +539,15 @@ def error_response(exc):
         code = 409
     else:
         code = 400
-    return jsonify(error=str(exc) or "INVALID_REQUEST"), code
+    if isinstance(exc, KeyError):
+        error = "MISSING_REQUIRED_FIELD"
+    elif isinstance(exc, (CouncilError, FileIntakeError)):
+        error = str(exc) or "INVALID_REQUEST"
+    elif isinstance(exc, ValueError) and str(exc).isupper():
+        error = str(exc)
+    else:
+        error = "INVALID_REQUEST"
+    return jsonify(error=error), code
 
 
 @app.get("/api/pocket/diagnostics")
@@ -583,7 +617,6 @@ def files_intake():
                 uploaded.filename,
                 uploaded.mimetype,
                 payload.get("source", "local"),
-                payload.get("destination"),
             )
         else:
             payload = body()
@@ -599,7 +632,6 @@ def files_intake():
                 payload.get("name"),
                 payload.get("media_type"),
                 payload.get("source", "local"),
-                payload.get("destination"),
             )
         return jsonify(result), 201
     except (CouncilError, FileIntakeError, KeyError, ValueError) as exc:
