@@ -187,6 +187,19 @@ def test_file_intake_route_accepts_multipart_upload(client, tmp_path):
     assert (tmp_path / "photo.png").read_bytes() == b"image-bytes"
 
 
+def test_file_intake_multipart_rejects_unsupported_media_type(client):
+    http, _ = client
+
+    response = http.post(
+        "/api/pocket/files/intake",
+        data={"source": "local", "file": (BytesIO(b"svg-bytes"), "photo.png", "image/svg+xml")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 422
+    assert response.get_json()["error"] == "UNSUPPORTED_MEDIA_TYPE"
+
+
 def test_file_intake_rejects_unsupported_extension(client):
     http, _ = client
     encoded = base64.b64encode(b"hello world").decode()

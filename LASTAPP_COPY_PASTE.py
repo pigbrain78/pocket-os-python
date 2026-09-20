@@ -382,16 +382,20 @@ def _store_file_in_directory(data, name, media_type, source, destination: Path):
     final = (destination / clean).resolve(strict=False)
     if final.parent != destination:
         raise FileIntakeError("INVALID_FILENAME")
+    fd = None
     try:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         fd = os.open(final, flags, 0o600)
         with os.fdopen(fd, "wb") as stream:
+            fd = None
             stream.write(data)
     except FileExistsError as exc:
         raise FileIntakeError("FILE_ALREADY_EXISTS") from exc
     except Exception:
+        if fd is not None:
+            os.close(fd)
         final.unlink(missing_ok=True)
         raise
     return {
@@ -482,10 +486,12 @@ class PocketOSService:
     def ratify(self, decision_id, body, session_token=None):
         principal = str(body["principal"])
         proposal_hash = str(body["proposal_hash"])
+        if not session_token:
+            raise AuthorityError("UNVERIFIED_HUMAN_AUTHORITY")
         event = self.council.ratify(
             decision_id,
             principal,
-            session_token or str(body.get("session_token", "")),
+            session_token,
             proposal_hash,
             context=str(body.get("context", "")),
         )
