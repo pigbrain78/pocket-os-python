@@ -13,8 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check canonical health
+        env:
+          POCKETOS_HEALTH_ATTEMPTS: "3"
+          POCKETOS_HEALTH_RETRY_DELAY: "10"
+          POCKETOS_HEALTH_TIMEOUT: "30"
         run: |
           set -euo pipefail
-          body=$(curl --fail --silent --show-error --max-time 20 https://pocketos-canonical-api.onrender.com/api/v1/health)
-          echo "$body"
-          python -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("status") == "healthy" and d.get("integrity") == "INTACT" and d.get("valid") is True' "$body"
+          python scripts/monitor_render_api.py
