@@ -51,7 +51,31 @@ def test_v1_status_is_versioned_and_normalized():
     assert body["schema_version"] == "v2"
     assert body["request_id"]
     assert body["ledger"]["integrity"] == "INTACT"
-    assert "server_time" in body
+    assert isinstance(body["serverTime"], int)
+    assert body["serverTime"] > 0
+
+
+def test_memory_projection_preserves_ledger_sequence():
+    r = client.get("/api/v1/memory")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert items
+    assert all(isinstance(item["sequence"], int) for item in items)
+    assert all(item["sequence"] == int(item["id"]) for item in items)
+
+
+def test_http_error_reuses_request_id_in_envelope_and_error():
+    r = client.get("/api/v1/memory/does-not-exist")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["request_id"] == body["error"]["request_id"]
+
+
+def test_console_projection_aliases_are_available():
+    for path in ("/api/v1/console/status", "/api/v1/console/state",
+                 "/api/v1/console/twin", "/api/v1/console/shadow",
+                 "/api/v1/console/decisions"):
+        assert client.get(path).status_code == 200, path
 
 
 def test_cognitive_twin_preserves_epistemic_status():
@@ -301,7 +325,7 @@ def test_contract_fixture_snapshot_is_stable():
     # (request ids, hashes, timestamps) are masked and do not cause failures.
     import os as _os
     mask = {"request_id", "hash", "previous_hash", "event_id", "occurred_at",
-            "server_time", "sequence"}
+            "server_time", "serverTime", "sequence"}
     paths = [
         "/api/v1/status", "/api/v1/memory", "/api/v1/memory/1",
         "/api/v1/cognitive-twin", "/api/v1/ai-shadow", "/api/v1/decisions",

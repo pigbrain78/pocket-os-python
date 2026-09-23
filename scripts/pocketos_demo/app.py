@@ -602,11 +602,12 @@ async def normalized_http_error(request: Request, exc: HTTPException) -> JSONRes
         403: "AUTHORIZATION_DENIED",
         404: "NOT_FOUND",
     }.get(exc.status_code, f"HTTP_{exc.status_code}")
+    request_id = _request_id()
     body = {
         "api_version": "1",
         "schema_version": "v2",
-        "request_id": _request_id(),
-        "error": {"code": code, "message": detail, "request_id": _request_id()},
+        "request_id": request_id,
+        "error": {"code": code, "message": detail, "request_id": request_id},
     }
     headers = dict(exc.headers or {})
     if exc.status_code == 429:
@@ -1610,6 +1611,7 @@ def _ledger_memory_item(record: dict[str, Any]) -> dict[str, Any]:
     seq = int(record.get("sequence") or 0)
     return {
         "id": str(seq),
+        "sequence": seq,
         "event": record.get("event", "memory.created"),
         "kind": record.get("kind", "memory"),
         "payload": record.get("payload") or {},
@@ -1626,7 +1628,8 @@ def api_v1_status() -> dict[str, Any]:
         "records": health["records"],
         "revision": health["revision"],
         "request_id": _request_id(),
-        "server_time": datetime.now(timezone.utc).isoformat(),
+        # Swift clients decode this as Int64 epoch milliseconds.
+        "serverTime": int(datetime.now(timezone.utc).timestamp() * 1000),
         "schema_version": "v2",
     })
 
@@ -1700,5 +1703,12 @@ for _path, _endpoint, _methods in (
     ("/api/v1/ledger/events/{sequence}", api_v1_ledger_event, ["GET"]),
     ("/api/v1/evidence/verification", api_v1_evidence, ["GET"]),
     ("/api/v1/openapi.json", api_v1_openapi, ["GET"]),
+    # Compatibility aliases for the web console. These reuse the existing
+    # handlers and do not introduce a second storage or authority path.
+    ("/api/v1/console/status", api_v1_status, ["GET"]),
+    ("/api/v1/console/state", api_state, ["GET"]),
+    ("/api/v1/console/twin", api_twin, ["GET"]),
+    ("/api/v1/console/shadow", api_shadow, ["GET"]),
+    ("/api/v1/console/decisions", api_decisions, ["GET"]),
 ):
     app.add_api_route(_path, _endpoint, methods=_methods, include_in_schema=True)
