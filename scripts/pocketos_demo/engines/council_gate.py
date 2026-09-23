@@ -52,11 +52,14 @@ from . import ed25519_verifier
 # usable out of the box, while allowing production deployments to disable the
 # in-process signer explicitly.
 _DEMO_SIGNING = os.environ.get("POCKETOS_COUNCIL_DEMO_SIGNING", "0") == "1"
+_TEST_SIGNER_ENABLED = os.environ.get("POCKETOS_COUNCIL_TEST_SIGNER_ENABLED", "0") == "1"
 _PRODUCTION_SIGNING_ENABLED = os.environ.get("POCKETOS_PRODUCTION_SIGNING_ENABLED", "0") == "1"
 _CONSOLE_SIGNER_URL = os.environ.get("POCKETOS_CONSOLE_SIGNER_URL", "").strip().rstrip("/")
 _CONSOLE_SIGNER_TOKEN = os.environ.get("POCKETOS_CONSOLE_SIGNER_TOKEN", "").strip()
 _SIGNATURE_ALGORITHM = os.environ.get("POCKETOS_COUNCIL_SIGNATURE_ALGORITHM", "HMAC-SHA256").strip()
 _PUBLIC_KEYS_JSON = os.environ.get("POCKETOS_COUNCIL_PUBLIC_KEYS_JSON", "")
+_RUNTIME_ENV = os.environ.get("POCKETOS_RUNTIME_ENV", os.environ.get("POCKETOS_ENV", "production")).strip().lower()
+_NON_PROD_ENVS = frozenset({"sandbox", "dev", "development", "test", "local"})
 
 # Deterministic demo seeds (used ONLY in demo signing mode). In production these
 # are replaced by off-box member keys; Pocket OS never sees the raw signing key.
@@ -110,7 +113,7 @@ def signing_enabled() -> bool:
     """True only when the process is the demo signing service. In production
     this is False, so /council-sign is disabled and no signing key is reachable
     over HTTP."""
-    return _DEMO_SIGNING
+    return _DEMO_SIGNING or _TEST_SIGNER_ENABLED
 
 
 def console_signer_configured() -> bool:
@@ -122,16 +125,38 @@ def production_signing_enabled() -> bool:
     return _PRODUCTION_SIGNING_ENABLED
 
 
+def non_production_env() -> bool:
+    return _RUNTIME_ENV in _NON_PROD_ENVS
+
+
 def console_signer_status() -> dict[str, Any]:
+    production_allowed = production_signing_enabled() and not non_production_env()
     return {
         "configured": console_signer_configured(),
-        "mode": "console-signer" if console_signer_configured() else ("demo" if _DEMO_SIGNING else "off-box-unconfigured"),
+        "mode": "console-signer" if (production_allowed and console_signer_configured()) else ("sandbox-test" if signing_enabled() else "off-box-unconfigured"),
         "private_keys_in_pocketos": False,
         "production_signing_enabled": production_signing_enabled(),
+        "production_signing_allowed": production_allowed,
+        "runtime_env": _RUNTIME_ENV,
+        "test_signer_enabled": signing_enabled(),
         "signature_algorithm": _SIGNATURE_ALGORITHM,
         "public_key_registry_configured": bool(ED25519_REGISTRY) if _SIGNATURE_ALGORITHM == ed25519_verifier.ALGORITHM else True,
         "public_key_registry_error": _PUBLIC_KEY_REGISTRY_ERROR,
     }
+
+
+def signer_unavailable_message() -> str:
+    """Return an actionable explanation when signing cannot proceed."""
+    if non_production_env() and not signing_enabled():
+        return (
+            "sandbox/test signer is disabled; set "
+            "POCKETOS_COUNCIL_TEST_SIGNER_ENABLED=1 (or POCKETOS_COUNCIL_DEMO_SIGNING=1)"
+        )
+    if non_production_env() and production_signing_enabled():
+        return "production signing is blocked outside production runtime environments"
+    if production_signing_enabled() and not console_signer_configured():
+        return "production signing is enabled but Console Signer configuration is missing"
+    return "production signing is disabled or Console Signer is unavailable"
 
 
 def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[dict[str, str]]:
@@ -140,7 +165,7 @@ def sign_via_console(member: str, candidate_id: str, state: str) -> Optional[dic
     PocketOS never receives or stores signing keys. Any missing configuration,
     transport failure, malformed response, or signer error fails closed.
     """
-    if not production_signing_enabled() or not console_signer_configured():
+    if not production_signing_enabled() or non_production_env() or not console_signer_configured():
         return None
     payload = json.dumps({"member": member, "decision_id": candidate_id, "state": state}).encode()
     request = urllib.request.Request(
@@ -173,7 +198,7 @@ def sign_for_member(member: str, candidate_id: str, state: str) -> Optional[str]
     signatures; raw signing keys never reside in the Pocket OS runtime or
     behind an HTTP route.
     """
-    if not _DEMO_SIGNING:
+    if not signing_enabled():
         return None
     ak = council.active_key(REGISTRY, member)
     if ak is None:
