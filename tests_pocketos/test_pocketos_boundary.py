@@ -331,6 +331,13 @@ def test_review_due_waits_for_execution_window():
             break
     due_after_window = client.get("/api/v1/decisions/review/due", headers=_h(tok)).json()["reviews"]
     assert did in {item["decision_id"] for item in due_after_window}
+    old_iso = "2020-01-01T00:00:00+00:00"
+    for record in A.STATE._records:
+        if record.get("event") == "decision.executed" and (record.get("payload") or {}).get("decision_id") == did:
+            record["timestamp"] = old_iso
+            break
+    due_after_iso_window = client.get("/api/v1/decisions/review/due", headers=_h(tok)).json()["reviews"]
+    assert did in {item["decision_id"] for item in due_after_iso_window}
 
 
 def test_no_web_only_fields_in_v1_json():

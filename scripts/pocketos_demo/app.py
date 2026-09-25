@@ -1016,7 +1016,7 @@ def api_decision_reviews_due(request: Request) -> dict[str, Any]:
                 executed = None
             executed_at = _parse_executed_at((executed or {}).get("timestamp"))
             review_after_days = int(receipt["review_after_days"])
-            if executed_at is not None and now >= executed_at + timedelta(days=max(1, review_after_days)):
+            if executed_at is None or now >= executed_at + timedelta(days=max(1, review_after_days)):
                 due.append(
                     {
                         "decision_id": decision.decision_id,

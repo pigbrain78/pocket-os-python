@@ -21,6 +21,7 @@ Negative guarantees enforced here (and unit-tested):
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -288,6 +289,7 @@ class ConstitutionalRuntime:
                 "risk": decision.risk,
                 "reversible": decision.reversible,
                 "result": "executed",
+                "timestamp": int(time.time()),
             },
         )
         self._registry.ingest(record)
