@@ -177,7 +177,6 @@
           "title": "str"
         }
       ],
-      "request_id": "str",
       "schema_version": "str"
     },
     "/api/v1/decisions/D-CORPUS-1001": {

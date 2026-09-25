@@ -54,7 +54,7 @@ sig_b = client.post("/api/v1/decisions/D-WORKSPACE-1003/council-sign?member=coun
 assert sig_a.status_code == 200 and sig_b.status_code == 200
 ratified = client.post("/api/v1/decisions/D-WORKSPACE-1003/ratify", headers=auth_headers, json={"signatures": {"council-a": sig_a.json()["signature"], "council-b": sig_b.json()["signature"]}, "claimed_authority": "NONE"})
 assert ratified.status_code == 200 and ratified.json()["ok"] is True
-executed = client.post("/api/v1/decisions/D-WORKSPACE-1003/execute", headers=auth_headers, json={"claimed_authority": "NONE"})
+executed = client.post("/api/decisions/D-WORKSPACE-1003/execute", headers=auth_headers, json={"claimed_authority": "NONE"})
 assert executed.status_code == 200 and executed.json()["ok"] is True
 receipt = client.get("/api/v1/decisions/D-WORKSPACE-1003/receipt", headers=auth_headers)
 assert receipt.status_code == 200 and receipt.json()["receipt"]["status"] == "EXECUTED"
