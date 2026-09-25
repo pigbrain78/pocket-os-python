@@ -9,6 +9,7 @@ cannot gain authority it lacks (no bypass of governance/constitutional gates).
 import os
 import sys
 import json
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
@@ -296,7 +297,7 @@ def test_ratification_receipt_uses_sealed_block_ratifiers():
         A.council_gate._TEST_SIGNER_ENABLED = old_signer
         A.council_gate._RUNTIME_ENV = old_env
     assert ratified.status_code == 200, ratified.text
-    receipt = client.get(f"/api/v1/decisions/{did}/receipt").json()["receipt"]
+    receipt = client.get(f"/api/v1/decisions/{did}/receipt", headers=_h(tok)).json()["receipt"]
     assert receipt["council"]["signatures"] == ["council-a", "council-b"]
     assert receipt["council"]["quorum"] == 2
 
@@ -323,6 +324,13 @@ def test_review_due_waits_for_execution_window():
     assert client.post(f"/api/decisions/{did}/execute", headers=_h(tok)).status_code == 200
     due = client.get("/api/v1/decisions/review/due", headers=_h(tok)).json()["reviews"]
     assert did not in {item["decision_id"] for item in due}
+    old_timestamp = int(time.time()) - (31 * 24 * 60 * 60)
+    for record in A.STATE._records:
+        if record.get("event") == "decision.executed" and (record.get("payload") or {}).get("decision_id") == did:
+            record["timestamp"] = old_timestamp
+            break
+    due_after_window = client.get("/api/v1/decisions/review/due", headers=_h(tok)).json()["reviews"]
+    assert did in {item["decision_id"] for item in due_after_window}
 
 
 def test_no_web_only_fields_in_v1_json():

@@ -988,33 +988,33 @@ def api_decision_receipt_share(decision_id: str, request: Request, include_evide
 def api_decision_reviews_due(request: Request) -> dict[str, Any]:
     _require_permission(_bearer(request), PERM_READ)
     _sync_decision_state()
+    records_by_sequence = {int(record.get("sequence") or 0): record for record in STATE.records()}
+
+    def _parse_executed_at(raw: Any) -> datetime | None:
+        if isinstance(raw, (int, float)) and raw > 0:
+            return datetime.fromtimestamp(raw, tz=timezone.utc)
+        if isinstance(raw, str) and raw.strip():
+            text = raw.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return None
+
     now = datetime.now(timezone.utc)
     due = []
     for decision in _DECISION_REGISTRY.all():
         receipt = _decision_receipt(decision.decision_id)["receipt"]
         if decision.status == STATUS_EXECUTED and not receipt["outcome_reviews"]:
-            executed = next(
-                (
-                    r for r in STATE.records()
-                    if int(r.get("sequence") or 0) == int(decision.executed_seq or 0)
-                    and (r.get("event") or "") == "decision.executed"
-                ),
-                None,
-            )
-            executed_timestamp = (executed or {}).get("timestamp")
-            executed_at: datetime | None = None
-            if isinstance(executed_timestamp, (int, float)) and executed_timestamp > 0:
-                executed_at = datetime.fromtimestamp(executed_timestamp, tz=timezone.utc)
-            elif isinstance(executed_timestamp, str) and executed_timestamp.strip():
-                raw = executed_timestamp.strip()
-                if raw.endswith("Z"):
-                    raw = raw[:-1] + "+00:00"
-                try:
-                    executed_at = datetime.fromisoformat(raw)
-                    if executed_at.tzinfo is None:
-                        executed_at = executed_at.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    executed_at = None
+            executed = records_by_sequence.get(int(decision.executed_seq or 0))
+            if (executed or {}).get("event") != "decision.executed":
+                executed = None
+            executed_at = _parse_executed_at((executed or {}).get("timestamp"))
             review_after_days = int(receipt["review_after_days"])
             if executed_at is not None and now >= executed_at + timedelta(days=max(1, review_after_days)):
                 due.append(
