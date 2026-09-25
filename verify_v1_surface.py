@@ -31,7 +31,6 @@ assert client.post("/api/v1/decisions/D-unknown/ratify", json={"signatures": {}}
 assert client.post("/api/v1/decisions/D-unknown/council-sign?member=council-a").status_code == 401
 assert client.get("/api/v1/decisions/D-unknown/evidence").status_code == 404
 assert client.get("/api/v1/decisions/D-unknown/ledger").status_code == 404
-assert client.post("/api/v1/decisions/D-unknown/execute").status_code == 401
 assert client.get("/api/v1/decisions/D-unknown/receipt").status_code == 404
 assert client.post("/api/v1/decisions/D-unknown/outcome", json={"outcome": "no"}).status_code == 401
 assert client.get("/api/v1/scrub?end=-1&include_decisions=true").json().get("ok") is False
@@ -92,4 +91,5 @@ assert "/api/v1/preferences/audit" in paths
 assert "/api/v1/evidence/traits" in paths
 assert "/api/v1/decisions/{decision_id}/receipt" in paths
 assert "/api/v1/decisions/{decision_id}/outcome" in paths
+assert not any(path.startswith("/api/v1/decisions/") and path.endswith("/execute") for path in paths)
 print("PocketOS /api/v1 surface verified")

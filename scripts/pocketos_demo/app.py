@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from datetime import timedelta
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -601,6 +602,9 @@ async def normalized_http_error(request: Request, exc: HTTPException) -> JSONRes
         401: "AUTHENTICATION_REQUIRED",
         403: "AUTHORIZATION_DENIED",
         404: "NOT_FOUND",
+        409: "CONFLICT",
+        422: "VALIDATION_FAILED",
+        429: "RATE_LIMITED",
     }.get(exc.status_code, f"HTTP_{exc.status_code}")
     request_id = _request_id()
     body = {
@@ -900,7 +904,13 @@ def api_open_loops() -> dict[str, Any]:
 def api_decisions() -> dict[str, Any]:
     _sync_decision_state()
     items = [d.view() for d in _DECISION_REGISTRY.all()]
-    return {"api_version": "1", "schema_version": "v2", "items": items}
+    return {
+        "api_version": "1",
+        "schema_version": "v2",
+        "request_id": _request_id(),
+        "items": items,
+        "decisions": items,
+    }
 
 
 def _decision_records(decision_id: str) -> list[dict[str, Any]]:
@@ -928,6 +938,8 @@ def _decision_receipt(decision_id: str) -> dict[str, Any]:
     reviews = [r for r in records if r["event"] == "decision.outcome_reviewed"]
     proposal_payload = (proposal or {}).get("payload", {})
     ratification_payload = (ratification or {}).get("payload", {})
+    ratification_block = ratification_payload.get("block") if isinstance(ratification_payload.get("block"), dict) else {}
+    ratifiers = ratification_block.get("ratifiers") if isinstance(ratification_block.get("ratifiers"), list) else []
     verification = _verification_view()
     return {
         "receipt": {
@@ -936,8 +948,8 @@ def _decision_receipt(decision_id: str) -> dict[str, Any]:
             "evidence": records,
             "council": {
                 "approved": decision.council_approved,
-                "signatures": ratification_payload.get("ratifiers", []),
-                "quorum": len(ratification_payload.get("ratifiers", [])),
+                "signatures": ratifiers,
+                "quorum": len(ratifiers),
             },
             "human": {"status": "RATIFIED" if decision.human_ratified else "PENDING"},
             "risk": decision.risk,
@@ -976,11 +988,43 @@ def api_decision_receipt_share(decision_id: str, request: Request, include_evide
 def api_decision_reviews_due(request: Request) -> dict[str, Any]:
     _require_permission(_bearer(request), PERM_READ)
     _sync_decision_state()
+    now = datetime.now(timezone.utc)
     due = []
     for decision in _DECISION_REGISTRY.all():
         receipt = _decision_receipt(decision.decision_id)["receipt"]
         if decision.status == STATUS_EXECUTED and not receipt["outcome_reviews"]:
-            due.append({"decision_id": decision.decision_id, "title": decision.title, "review_after_days": receipt["review_after_days"], "status": "REVIEW_DUE"})
+            executed = next(
+                (
+                    r for r in STATE.records()
+                    if int(r.get("sequence") or 0) == int(decision.executed_seq or 0)
+                    and (r.get("event") or "") == "decision.executed"
+                ),
+                None,
+            )
+            executed_timestamp = (executed or {}).get("timestamp")
+            executed_at: datetime | None = None
+            if isinstance(executed_timestamp, (int, float)) and executed_timestamp > 0:
+                executed_at = datetime.fromtimestamp(executed_timestamp, tz=timezone.utc)
+            elif isinstance(executed_timestamp, str) and executed_timestamp.strip():
+                raw = executed_timestamp.strip()
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                try:
+                    executed_at = datetime.fromisoformat(raw)
+                    if executed_at.tzinfo is None:
+                        executed_at = executed_at.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    executed_at = None
+            review_after_days = int(receipt["review_after_days"])
+            if executed_at is not None and now >= executed_at + timedelta(days=max(1, review_after_days)):
+                due.append(
+                    {
+                        "decision_id": decision.decision_id,
+                        "title": decision.title,
+                        "review_after_days": review_after_days,
+                        "status": "REVIEW_DUE",
+                    }
+                )
     return {"reviews": due, "source": "canonical-ledger-review-queue"}
 
 
@@ -1346,7 +1390,7 @@ def api_decisions_ratify(decision_id: str, request: Request, body: RatifyBody | 
     STATE.append("decision.ratified", "Council", {
         "decision_id": decision_id,
         "state": state,
-        "ratifiers": sorted(sigs.keys()),
+        "ratifiers": sorted(str(member) for member in (block.get("ratifiers") or []) if str(member)),
         "authority": "COUNCIL_QUORUM",
         "claimed_authority_ignored": (body.claimed_authority if body else "NONE"),
         "block": block,
@@ -1628,8 +1672,8 @@ def api_v1_status() -> dict[str, Any]:
         "records": health["records"],
         "revision": health["revision"],
         "request_id": _request_id(),
-        # Swift clients decode this as Int64 epoch milliseconds.
-        "serverTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+        # Swift clients decode this as Int64 epoch seconds.
+        "serverTime": int(datetime.now(timezone.utc).timestamp()),
         "schema_version": "v2",
     })
 

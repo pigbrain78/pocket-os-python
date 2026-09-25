@@ -52,7 +52,8 @@ def test_v1_status_is_versioned_and_normalized():
     assert body["request_id"]
     assert body["ledger"]["integrity"] == "INTACT"
     assert isinstance(body["serverTime"], int)
-    assert body["serverTime"] > 0
+    assert body["serverTime"] > 1_000_000_000
+    assert body["serverTime"] < 100_000_000_000
 
 
 def test_memory_projection_preserves_ledger_sequence():
@@ -64,11 +65,38 @@ def test_memory_projection_preserves_ledger_sequence():
     assert all(item["sequence"] == int(item["id"]) for item in items)
 
 
+def test_decisions_list_keeps_legacy_and_v1_fields():
+    for path in ("/api/decisions", "/api/v1/decisions"):
+        r = client.get(path)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["request_id"]
+        assert "items" in body
+        assert "decisions" in body
+        assert body["decisions"] == body["items"]
+
+
 def test_http_error_reuses_request_id_in_envelope_and_error():
     r = client.get("/api/v1/memory/does-not-exist")
     assert r.status_code == 404
     body = r.json()
     assert body["request_id"] == body["error"]["request_id"]
+
+
+def test_http_error_contract_code_mapping():
+    tok = _login()
+    headers = _h(tok)
+    assert client.post("/api/v1/decisions/D-WORKSPACE-1003/reject", headers=headers).status_code == 200
+    r = client.post("/api/v1/decisions/D-WORKSPACE-1003/ratify", json={}, headers=headers)
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "CONFLICT"
+    r = client.post("/api/v1/shadow/propose", json={"text": "   "}, headers=headers)
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "VALIDATION_FAILED"
+    for _ in range(6):
+        r = client.post("/api/login", json={"username": "admin", "password": "wrong"})
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "RATE_LIMITED"
 
 
 def test_console_projection_aliases_are_available():
@@ -246,6 +274,55 @@ def test_propose_then_ratify_then_execute_path():
         A.council_gate._RUNTIME_ENV = old_env
     assert r.status_code == 200, r.text
     assert r.json()["decision"]["status"] == "RATIFIED"
+
+
+def test_ratification_receipt_uses_sealed_block_ratifiers():
+    tok = _login()
+    did = "D-WORKSPACE-1003"
+    assert client.post(f"/api/v1/decisions/{did}/council-approve", headers=_h(tok)).status_code == 200
+    old_signer = A.council_gate._TEST_SIGNER_ENABLED
+    old_env = A.council_gate._RUNTIME_ENV
+    A.council_gate._TEST_SIGNER_ENABLED = True
+    A.council_gate._RUNTIME_ENV = "sandbox"
+    try:
+        sig_a = client.post(f"/api/v1/decisions/{did}/council-sign?member=council-a", headers=_h(tok)).json()["signature"]
+        sig_b = client.post(f"/api/v1/decisions/{did}/council-sign?member=council-b", headers=_h(tok)).json()["signature"]
+        ratified = client.post(
+            f"/api/v1/decisions/{did}/ratify",
+            json={"signatures": {"council-a": sig_a, "council-b": sig_b}},
+            headers=_h(tok),
+        )
+    finally:
+        A.council_gate._TEST_SIGNER_ENABLED = old_signer
+        A.council_gate._RUNTIME_ENV = old_env
+    assert ratified.status_code == 200, ratified.text
+    receipt = client.get(f"/api/v1/decisions/{did}/receipt").json()["receipt"]
+    assert receipt["council"]["signatures"] == ["council-a", "council-b"]
+    assert receipt["council"]["quorum"] == 2
+
+
+def test_review_due_waits_for_execution_window():
+    tok = _login()
+    did = "D-WORKSPACE-1003"
+    assert client.post(f"/api/v1/decisions/{did}/council-approve", headers=_h(tok)).status_code == 200
+    old_signer = A.council_gate._TEST_SIGNER_ENABLED
+    old_env = A.council_gate._RUNTIME_ENV
+    A.council_gate._TEST_SIGNER_ENABLED = True
+    A.council_gate._RUNTIME_ENV = "sandbox"
+    try:
+        sig_a = client.post(f"/api/v1/decisions/{did}/council-sign?member=council-a", headers=_h(tok)).json()["signature"]
+        sig_b = client.post(f"/api/v1/decisions/{did}/council-sign?member=council-b", headers=_h(tok)).json()["signature"]
+        assert client.post(
+            f"/api/v1/decisions/{did}/ratify",
+            json={"signatures": {"council-a": sig_a, "council-b": sig_b}},
+            headers=_h(tok),
+        ).status_code == 200
+    finally:
+        A.council_gate._TEST_SIGNER_ENABLED = old_signer
+        A.council_gate._RUNTIME_ENV = old_env
+    assert client.post(f"/api/decisions/{did}/execute", headers=_h(tok)).status_code == 200
+    due = client.get("/api/v1/decisions/review/due", headers=_h(tok)).json()["reviews"]
+    assert did not in {item["decision_id"] for item in due}
 
 
 def test_no_web_only_fields_in_v1_json():
