@@ -23,11 +23,30 @@ export default function GraphCanvas({ nodes, edges, width, height, selectedId, o
     const rad = Math.min(width, height) * 0.28;
     positions[n.id] = { x: cx + Math.cos(angle) * rad, y: cy + Math.sin(angle) * rad };
   });
-  concepts.forEach((c) => {
+  const noteIds = new Set(notes.map((n) => n.id));
+  const anchors: Record<string, { x: number; y: number }[]> = {};
+  edges.forEach((e) => {
+    const noteId = noteIds.has(e.src) ? e.src : noteIds.has(e.dst) ? e.dst : null;
+    const conceptId = noteId === e.src ? e.dst : noteId === e.dst ? e.src : null;
+    if (!noteId || !conceptId || !positions[noteId]) return;
+    (anchors[conceptId] ||= []).push(positions[noteId]);
+  });
+  concepts.forEach((c, i) => {
+    const linked = anchors[c.id];
+    if (linked?.length) {
+      const ax = linked.reduce((sum, p) => sum + p.x, 0) / linked.length;
+      const ay = linked.reduce((sum, p) => sum + p.y, 0) / linked.length;
+      const angle = (i / Math.max(concepts.length, 1)) * Math.PI * 2;
+      positions[c.id] = {
+        x: Math.min(width - 16, Math.max(16, ax + Math.cos(angle) * 36)),
+        y: Math.min(height - 16, Math.max(16, ay + Math.sin(angle) * 36)),
+      };
+      return;
+    }
     const seed = hash(c.id);
     positions[c.id] = {
-      x: 30 + (seed % (width - 60)),
-      y: 40 + ((seed >> 4) % (height - 80)),
+      x: 30 + (seed % Math.max(width - 60, 1)),
+      y: 40 + ((seed >> 4) % Math.max(height - 80, 1)),
     };
   });
 

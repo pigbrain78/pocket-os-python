@@ -4,7 +4,7 @@ import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://thinking-replay.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "").rstrip("/")
 API = f"{BASE_URL}/api"
 
 DEMO_EMAIL = "demo@pocketos.app"
@@ -102,7 +102,7 @@ class TestDebateAndRatify:
         roles = [t["role"] for t in d["turns"]]
         assert roles == ["critic", "defender", "synthesizer"], f"roles order wrong: {roles}"
         # Distinct provider+model per turn
-        expected = [("anthropic", "claude-sonnet-4-6"), ("openai", "gpt-5.4"), ("gemini", "gemini-3-flash-preview")]
+        expected = [("local", "pocket-os-local"), ("local", "pocket-os-local"), ("local", "pocket-os-local")]
         actual = [(t["provider"], t["model"]) for t in d["turns"]]
         assert actual == expected, f"provider/model mismatch: {actual}"
         for t in d["turns"]:

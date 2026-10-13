@@ -1,9 +1,9 @@
 import React from "react";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { BlurView } from "expo-blur";
-import { Platform, StyleSheet, View } from "react-native";
+import { StyleSheet } from "react-native";
 import { colors } from "@/src/theme";
+import GlassBar from "@/src/components/GlassBar";
 
 export default function TabsLayout() {
   return (
@@ -15,14 +15,12 @@ export default function TabsLayout() {
         tabBarStyle: {
           position: "absolute",
           borderTopColor: colors.border,
-          backgroundColor: Platform.OS === "ios" ? "rgba(255,255,255,0.75)" : "#FFFFFF",
+          backgroundColor: "transparent",
           height: 84,
           paddingTop: 8,
         },
         tabBarBackground: () => (
-          Platform.OS === "ios" ? (
-            <BlurView intensity={80} tint="light" style={StyleSheet.absoluteFill} />
-          ) : <View style={[StyleSheet.absoluteFill, { backgroundColor: "#FFFFFF" }]} />
+          <GlassBar style={StyleSheet.absoluteFill} />
         ),
         tabBarLabelStyle: { fontSize: 11, fontWeight: "600" },
       }}

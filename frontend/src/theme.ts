@@ -31,6 +31,11 @@ export const radius = { sm: 6, md: 12, lg: 20, pill: 999 };
 
 export const fs = { sm: 12, base: 14, lg: 16, xl: 20, "2xl": 24, "3xl": 34, "4xl": 48 };
 
+export const fonts = {
+  text: undefined as string | undefined,
+  mono: "SpaceMono",
+};
+
 export const agentColorMap: Record<string, string> = {
   agentResearch: colors.agentResearch,
   agentArchitect: colors.agentArchitect,

@@ -4,7 +4,7 @@
 Pocket OS is a **Cognitive Operating System** — not another note app. Everything captured becomes connected. Knowledge compounds. AI advises, humans decide, every decision is traceable.
 
 ## MVP Scope (all 12 differentiators as simplified, coherent layers)
-**Phase 1 — Capture**: Universal capture (text), Cognitive Timeline, AI Concept Classification (Gemini 3 Flash), Living Knowledge Graph (nodes + edges), Memory Growth ring animation.
+**Phase 1 — Capture**: Universal capture (text), Cognitive Timeline, local concept classification, Living Knowledge Graph (nodes + edges), Memory Growth ring animation.
 **Phase 2 — Understand**: Decision DNA (downstream lineage), Idea Evolution (Git-like versions), Memory Gravity score per note.
 **Phase 3 — Think**: Personal AI Council (5 specialist agents), AI Shadow (behavioral insights), Cognitive Twin (reasoning from user history).
 **Phase 4 — Reflect**: Memory Health dashboard (Apple-Health rings), Knowledge ROI (projects/tasks/revenue per note), Thinking Replay endpoint.
@@ -14,7 +14,7 @@ Pocket OS is a **Cognitive Operating System** — not another note app. Everythi
 - Frontend: Expo Router (SDK 54), React Native, react-native-svg, expo-blur, reanimated.
 - Backend: FastAPI + MongoDB (motor).
 - Auth: JWT email/password (bcrypt).
-- LLM: Gemini 3 Flash via `emergentintegrations` (EMERGENT_LLM_KEY).
+- LLM: local workspace review only. No third-party model and no API key.
 
 ## Screens
 - Auth: welcome / login / register (seeded demo user).
@@ -28,7 +28,7 @@ Pocket OS is a **Cognitive Operating System** — not another note app. Everythi
 - **Capture reveal**: Memory Strength before → after with animated ring, extracted concepts, new connections.
 - **Timeline replay**: Grouped by day, per-event colored icons + vertical line, memory strength bars.
 - **Living Graph**: SVG canvas showing note & concept nodes with edges; concept chips selectable.
-- **AI Council**: 5 colored agent cards streamed from Gemini for any note.
+- **AI Council**: 5 colored agent cards from a local review of the note. No external model.
 - **Memory Health**: 3 concentric rings + overall score + metric tiles.
 - **Cognitive Twin**: user asks a question, answered strictly from their own history.
 - **Pocket Score / Knowledge Compounding**: on the Console home.
@@ -41,9 +41,9 @@ Every note carries **Attributed Revenue + Produced Projects/Tasks/Articles/Propo
 Multi-signal governance escalation replaces the naive "consensus.confidence < 0.65" trigger with an eight-signal escalator: `low_confidence`, `agent_disagreement (stddev>0.25)`, `high_risk`, `governance_domain` (security/governance/architecture/irreversibility/expense keyword match), `prior_decision_conflict`, `insufficient_evidence`, `novel_decision`, and `conflicting_positions`.
 
 When ANY signal fires, a three-turn debate is executed:
-1. **Critic (Claude Sonnet 4.6)** — argues against the majority verdict.
-2. **Defender (GPT-5.4)** — steelmans the majority, listing required conditions.
-3. **Synthesizer (Gemini 3 Flash)** — emits strict-JSON synthesis with `resolution`, `conditions[]`, `escalate`, `synthesis_position`, `confidence`.
+1. **Critic** — argues against the majority verdict. Local only.
+2. **Defender** — steelmans the majority, listing required conditions. Local only.
+3. **Synthesizer** — emits strict-JSON synthesis with `resolution`, `conditions[]`, `escalate`, `synthesis_position`, `confidence`. Local only.
 
 Every turn is written to the Immutable Event Ledger as its own hashed event, and the final Synthesis Proposal carries a canonical `synthesis_hash` (SHA-256 over triggers + turn hashes + synthesis payload). Synthesis Proposals remain **unratified** until a human ratifies (`POST /api/synthesis/{sid}/ratify`) or rejects (`POST /api/synthesis/{sid}/reject`). Ratification re-computes Decision DNA for every decision bound to the note so that `reasoning_hash` cryptographically covers the ratified synthesis, and adds a `synthesis_ratified` event to the Ledger. `reasoning_source` on the DNA card becomes `synthesis`, precedence: **synthesis > consensus > raw_council**.
 
@@ -70,7 +70,7 @@ Extended `prior_decision_conflict` from count-based to **semantic contradiction 
 Targeted metric-credibility patches. NO parallel subsystems created; existing architecture preserved.
 - **Decision metrics** — removed `random.randint` fabrication in `/api/decisions`. `referenced_notes` now counts real concept-overlap peers, `influenced_agents` = distinct council agents who reviewed the source note, `affected_projects`/`produced_tasks` default to 0 (attributed only when downstream evidence exists).
 - **Cognitive DNA** — returns `confidence`, `evidence_count`, `counter_signal` per trait; bounded 20-95% (no false 99% scores); explicit disclaimer that it's a derived behavioral model, not a psychological assessment.
-- **Cognitive Twin** — restructured to return `{prediction, confidence, evidence[], evidence_count, counter_signal, reasoning, kind: "MODEL PREDICTION"}`. Strict-JSON Gemini prompt with confidence ceiling of 0.85. Genome tab now renders the prediction with confidence pill, reasoning, counter-signal, and the exact evidence items reasoned from.
+- **Cognitive Twin** — restructured to return `{prediction, confidence, evidence[], evidence_count, counter_signal, reasoning, kind: "MODEL PREDICTION"}`. Local JSON review with a confidence ceiling of 0.85. Genome tab now renders the prediction with confidence pill, reasoning, counter-signal, and the exact evidence items reasoned from.
 - **AI Shadow** — labeled `DESCRIPTIVE MODEL` (distinct from Twin's `MODEL PREDICTION`).
 - **Seed data** — `revenue`/`produced_*` fields default to 0 instead of random. No more fake activity.
 - **Test-data cleanup** — new `POST /api/admin/cleanup-test-notes` surgically purges recognizably synthetic artifacts (coffee notes, TEST_ prefixes, my own earlier test notes). Cascades to related state; append-only ledger events untouched.
@@ -94,12 +94,11 @@ Owner-lockout recovery path for locked-out account holders in production.
 3. Sign in to the app with the new password.
 4. Remove `ADMIN_RESET_TOKEN` from env (or set to empty) + redeploy to disable the endpoint again.
 
-## Session +N — Forgot Password (Emergent Resend email flow)
+## Session +N — Forgot Password (local reset codes, no mail portal)
 Real, no-lockout password recovery so admin reset is no longer needed.
 - **`POST /api/auth/forgot-password`** — accepts `{email}`. **Enumeration-safe**: known and unknown emails return byte-identical `{ok:true, detail:"If an account exists for that email, a reset code has been sent."}` at 200. Rate-limited to 5 requests/hour/email. Creates a `password_resets` record (id, email, user_id, hashed code, created_at, expires_at, attempts, used) only for real users.
 - **`POST /api/auth/reset-password`** — accepts `{email, code, new_password}`. 6-digit numeric codes, SHA-256 hashed at rest (server-side pepper via JWT_SECRET), 15-minute TTL, single-use, ≤5 wrong attempts before auto-invalidation. Returns `{ok, token, user}` and writes a `password_reset_completed` event to the Immutable Event Ledger.
-- **Email delivery**: Emergent-managed Resend proxy (`https://integrations.emergentagent.com`, `X-Email-Key` header). Sender display name `EMAIL_FROM_NAME=Pocket OS`. Template is server-side (callers only supply the email ID, per G4); passes the full playbook guardrail gate (`_assert_safe_email`) — no `<form>/<input>`, only https absolute URLs, no shorteners, no IP literals, no credential-ask phrases.
-- **Preview graceful degradation**: `EMERGENT_EMAIL_KEY` is intentionally empty in preview → `send_email` no-ops and logs a warning instead of raising. Real email starts flowing after the next deploy (platform auto-provisions the key).
+- **Email delivery**: disabled. `send_email` validates the template and does not call an external mail portal or read an API key. Reset codes stay in the app.
 - **Frontend**: "Forgot password?" link added to `/auth/login` (testID `forgot-password-link`). New screens `/auth/forgot-password` (request code, enumeration-safe confirmation) and `/auth/reset-password` (email + 6-digit code + new password + confirm; on success auto-logs in via `useAuth().login` and routes to `/(tabs)/console`).
 - **Tests**: `/app/backend/tests/test_forgot_password.py` (24 tests, serial `-n 0`).
 

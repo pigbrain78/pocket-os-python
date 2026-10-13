@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, ScrollView, StyleSheet, Pressable, RefreshControl, ActivityIndicator } from "react-native";
+import { View, Text, ScrollView, StyleSheet, Pressable, RefreshControl, ActivityIndicator, Image } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import dayjs from "dayjs";
 import { useAuth, api } from "@/src/lib/auth";
-import { colors, spacing, radius, fs } from "@/src/theme";
+import { colors, spacing, radius, fs, fonts } from "@/src/theme";
+import GlassBar from "@/src/components/GlassBar";
 import TimeScrubber from "@/src/components/TimeScrubber";
 import BookmarkChips, { Bookmark } from "@/src/components/BookmarkChips";
 
@@ -48,6 +49,7 @@ export default function TimelineScreen() {
   const [events, setEvents] = useState<Event[]>([]);
   const [refresh, setRefresh] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Replay state
   const [bounds, setBounds] = useState<Bounds>({});
@@ -62,6 +64,7 @@ export default function TimelineScreen() {
 
   const load = useCallback(async () => {
     if (!token) return;
+    setError(null);
     try {
       const [evs, bnds, bms] = await Promise.all([
         api<Event[]>("/api/timeline", { token }),
@@ -73,6 +76,8 @@ export default function TimelineScreen() {
       setBookmarks(bms);
       // Anchor at "latest" so first render is LIVE.
       if (bnds.latest) setAtMs(dayjs(bnds.latest).valueOf());
+    } catch {
+      setError("Unable to sync timeline");
     } finally {
       setLoading(false);
     }
@@ -176,7 +181,7 @@ export default function TimelineScreen() {
 
   return (
     <SafeAreaView style={styles.c} edges={["top"]} testID="timeline-screen">
-      <View style={styles.head}>
+      <GlassBar style={styles.head}>
         <View style={{ flex: 1 }}>
           <Text style={styles.h1}>Timeline</Text>
           <Text style={styles.sub}>Every thought. Every link. Chronological.</Text>
@@ -185,7 +190,7 @@ export default function TimelineScreen() {
           <Ionicons name="shield-checkmark" size={14} color="#fff" />
           <Text style={styles.ledgerBtnT}>Ledger</Text>
         </Pressable>
-      </View>
+      </GlassBar>
 
       {/* Replay card + scrubber. Only rendered when we actually have history. */}
       {bounds.earliest && bounds.latest ? (
@@ -246,8 +251,23 @@ export default function TimelineScreen() {
         refreshControl={<RefreshControl refreshing={refresh} onRefresh={async () => { setRefresh(true); await load(); setRefresh(false); }} tintColor={colors.onSurface} />}
       >
         {loading ? <ActivityIndicator style={{ marginTop: 40 }} color={colors.onSurface} /> : null}
-        {events.length === 0 && !loading ? (
-          <Text style={styles.empty}>Log your first thought to see the replay.</Text>
+        {error && !loading ? (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.empty}>{error}</Text>
+            <Pressable style={styles.retry} onPress={() => { setLoading(true); load(); }} testID="timeline-retry">
+              <Text style={styles.retryT}>Retry</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {events.length === 0 && !loading && !error ? (
+          <View style={styles.emptyWrap}>
+            <Image
+              source={{ uri: "https://images.pexels.com/photos/1128207/pexels-photo-1128207.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940" }}
+              style={styles.emptyImg}
+              accessibilityLabel="Clean minimalist workspace desk"
+            />
+            <Text style={styles.empty}>Log your first thought</Text>
+          </View>
         ) : null}
         {Object.entries(groups).map(([day, evs]) => (
           <View key={day} style={{ marginBottom: spacing.xl }}>
@@ -276,7 +296,12 @@ export default function TimelineScreen() {
                       <Text style={styles.kind}>{e.kind.replace(/_/g, " ")}</Text>
                       {isFuture ? <Text style={styles.futureTag}>· not yet</Text> : null}
                     </View>
-                    <Text style={styles.text}>{e.text}</Text>
+                    <Text style={styles.text} numberOfLines={3}>{e.text}</Text>
+                    {typeof e.meta?.gravity === "number" || typeof e.meta?.after === "number" ? (
+                      <View style={styles.gravityBadge}>
+                        <Text style={styles.gravityT}>Gravity {e.meta?.gravity ?? e.meta?.after}</Text>
+                      </View>
+                    ) : null}
                     {e.meta?.after && e.meta?.before ? (
                       <View style={styles.strength}>
                         <View style={styles.bar}>
@@ -293,7 +318,8 @@ export default function TimelineScreen() {
         ))}
       </ScrollView>
       <Pressable style={styles.fab} onPress={() => router.push("/note/new")} testID="new-capture-fab">
-        <Ionicons name="add" size={28} color="#fff" />
+        <Ionicons name="add" size={18} color="#fff" />
+        <Text style={styles.fabT}>Add Note</Text>
       </Pressable>
     </SafeAreaView>
   );
@@ -343,7 +369,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   metricLab: { fontSize: fs.sm, color: colors.muted, marginTop: 2, textTransform: "uppercase", letterSpacing: 0.4 },
-  metricVal: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  metricVal: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginTop: 2, fontFamily: fonts.mono },
 
   s: { paddingHorizontal: spacing.xl, paddingBottom: 140 },
   day: { fontSize: fs.sm, color: colors.muted, marginBottom: spacing.md, textTransform: "uppercase", letterSpacing: 0.6 },
@@ -362,6 +388,13 @@ const styles = StyleSheet.create({
   bar: { height: 4, backgroundColor: colors.border, borderRadius: 2, overflow: "hidden" },
   barFill: { height: 4, backgroundColor: colors.success },
   strengthT: { fontSize: fs.sm, color: colors.success, fontWeight: "700" },
-  empty: { textAlign: "center", color: colors.muted, marginTop: 60 },
-  fab: { position: "absolute", right: spacing.xl, bottom: 100, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.onSurface, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
+  emptyWrap: { alignItems: "center", marginTop: spacing.xl, gap: spacing.md },
+  emptyImg: { width: "100%", height: 180, borderRadius: radius.lg },
+  empty: { textAlign: "center", color: colors.muted, fontSize: fs.lg },
+  retry: { backgroundColor: colors.onSurface, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 10 },
+  retryT: { color: "#fff", fontWeight: "700" },
+  gravityBadge: { alignSelf: "flex-start", marginTop: 8, backgroundColor: colors.surface, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
+  gravityT: { fontFamily: fonts.mono, fontSize: fs.sm, color: colors.onSurface, fontWeight: "700" },
+  fab: { position: "absolute", right: spacing.xl, bottom: 100, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.onSurface, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 12, shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
+  fabT: { color: "#fff", fontWeight: "700", fontSize: fs.base },
 });

@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import dayjs from "dayjs";
 import { useAuth, api } from "@/src/lib/auth";
-import { colors, spacing, radius, fs, agentColorMap } from "@/src/theme";
+import { colors, spacing, radius, fs, fonts, agentColorMap } from "@/src/theme";
 import Ring from "@/src/components/Ring";
 
 type Note = {
@@ -72,7 +72,7 @@ const DnaRow = ({ label, hash, verified, sublabel }: { label: string; hash?: str
     </View>
     <View style={styles.dnaBadge}>
       <Ionicons name="shield-checkmark" size={12} color={verified ? "#7BE38B" : "#B8B8BD"} />
-      <Text style={[styles.dnaBadgeT, { color: verified ? "#7BE38B" : "#B8B8BD" }]}>{verified ? "Verified" : "—"}</Text>
+      <Text style={[styles.dnaBadgeT, { color: verified ? colors.success : colors.muted }]}>{verified ? "Verified" : "—"}</Text>
     </View>
   </View>
 );
@@ -643,15 +643,18 @@ export default function NoteDetail() {
                 <View style={styles.decMetric}><Text style={styles.decVal}>{d.influenced_agents}</Text><Text style={styles.decLab}>Agents</Text></View>
               </View>
               {d.dna_root ? (
-                <View style={styles.dnaBox}>
-                  <Text style={styles.dnaHeader}>Decision DNA</Text>
-                  <DnaRow label="Context" hash={d.context_hash} verified />
-                  <DnaRow label="Reasoning" hash={d.reasoning_hash} verified sublabel={d.reasoning_source === "synthesis" ? "bound to synthesis" : d.reasoning_source === "consensus" ? "bound to consensus" : d.reasoning_source === "raw_council" ? "raw council" : undefined} />
-                  <DnaRow label="Governance" hash={d.governance_hash} verified />
-                  <DnaRow label="Outcome" hash={d.outcome_hash} verified />
-                  <View style={styles.dnaRoot}>
-                    <Text style={styles.dnaRootLab}>DNA ROOT</Text>
-                    <Text style={styles.dnaRootHash}>{d.dna_root.slice(0, 40)}…</Text>
+                <View style={styles.dnaLineage} testID={`dna-lineage-${d.id}`}>
+                  <View style={styles.dnaRail} />
+                  <View style={styles.dnaSteps}>
+                    <Text style={styles.dnaHeader}>Decision DNA</Text>
+                    <DnaRow label="Context" hash={d.context_hash} verified />
+                    <DnaRow label="Reasoning" hash={d.reasoning_hash} verified sublabel={d.reasoning_source === "synthesis" ? "bound to synthesis" : d.reasoning_source === "consensus" ? "bound to consensus" : d.reasoning_source === "raw_council" ? "raw council" : undefined} />
+                    <DnaRow label="Governance" hash={d.governance_hash} verified />
+                    <DnaRow label="Outcome" hash={d.outcome_hash} verified />
+                    <View style={styles.dnaRoot}>
+                      <Text style={styles.dnaRootLab}>DNA ROOT</Text>
+                      <Text style={styles.dnaRootHash}>{d.dna_root.slice(0, 40)}…</Text>
+                    </View>
                   </View>
                 </View>
               ) : null}
@@ -689,7 +692,7 @@ const styles = StyleSheet.create({
   chipT: { color: colors.onSurface, fontSize: fs.sm, fontWeight: "600" },
   gravCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.xl, marginTop: spacing.xl, gap: spacing.md },
   lab: { color: colors.muted, fontSize: fs.sm, textTransform: "uppercase", letterSpacing: 0.5 },
-  gravVal: { fontSize: fs["4xl"], fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  gravVal: { fontSize: fs["4xl"], fontWeight: "800", color: colors.onSurface, marginTop: 2, fontFamily: fonts.mono },
   sub: { color: colors.onSurfaceTertiary, fontSize: fs.sm, marginTop: 4 },
   subDim: { color: colors.muted, fontSize: fs.base, marginTop: 8 },
   section: { marginTop: spacing["2xl"] },
@@ -727,16 +730,18 @@ const styles = StyleSheet.create({
   opResultT: { color: colors.onSurface, fontSize: fs.base, lineHeight: 22 },
   chatAboutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.onSurface, padding: spacing.md, borderRadius: radius.md, marginTop: spacing.md },
   chatAboutT: { color: "#fff", fontSize: fs.base, fontWeight: "700" },
-  dnaBox: { marginTop: spacing.md, backgroundColor: "#0F0F10", borderRadius: radius.sm, padding: spacing.md, gap: 6 },
-  dnaHeader: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.5, fontWeight: "700", marginBottom: 4 },
-  dnaRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: "#222" },
-  dnaLabel: { color: "#fff", fontSize: fs.sm, fontWeight: "700" },
-  dnaHash: { color: "#8E8E93", fontSize: 10, fontFamily: "monospace", marginTop: 2 },
+  dnaLineage: { marginTop: spacing.md, flexDirection: "row", gap: spacing.md },
+  dnaRail: { width: 2, backgroundColor: colors.onSurface, borderRadius: 1, marginTop: 4 },
+  dnaSteps: { flex: 1, gap: 6 },
+  dnaHeader: { color: colors.muted, fontSize: 10, letterSpacing: 1.5, fontWeight: "700", marginBottom: 4 },
+  dnaRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
+  dnaLabel: { color: colors.onSurface, fontSize: fs.sm, fontWeight: "700" },
+  dnaHash: { color: colors.muted, fontSize: 10, fontFamily: fonts.mono, marginTop: 2 },
   dnaBadge: { flexDirection: "row", alignItems: "center", gap: 4 },
   dnaBadgeT: { fontSize: 10, fontWeight: "700" },
-  dnaRoot: { marginTop: 6, alignItems: "center", paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: "#333" },
-  dnaRootLab: { color: "#B8B8BD", fontSize: 10, letterSpacing: 1.5, fontWeight: "700" },
-  dnaRootHash: { color: "#7BE38B", fontFamily: "monospace", fontSize: 11, marginTop: 4 },
+  dnaRoot: { marginTop: 6, alignItems: "flex-start", paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  dnaRootLab: { color: colors.muted, fontSize: 10, letterSpacing: 1.5, fontWeight: "700" },
+  dnaRootHash: { color: colors.onSurface, fontFamily: fonts.mono, fontSize: 11, marginTop: 4 },
   consBox: { marginTop: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md },
   consHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" },
   consRec: { fontSize: fs.xl, fontWeight: "800", letterSpacing: 0.5 },

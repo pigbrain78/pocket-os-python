@@ -19,14 +19,11 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
-
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
-EMERGENT_LLM_KEY = os.environ['EMERGENT_LLM_KEY']
 JWT_SECRET = os.environ['JWT_SECRET']
 APPLE_AUDIENCES = [a.strip() for a in os.environ.get('APPLE_AUDIENCES', '').split(',') if a.strip()]
 APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
@@ -111,38 +108,88 @@ class DecisionIn(BaseModel):
 class TwinQuery(BaseModel):
     question: str
 
-# ---------------- AI Helpers ----------------
-async def gemini_chat(system: str, prompt: str, session_id: str = None) -> str:
-    """Single-shot Gemini 3 Flash call."""
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id or uid(),
-        system_message=system,
-    ).with_model("gemini", "gemini-3-flash-preview")
-    try:
-        resp = await chat.send_message(UserMessage(text=prompt))
-        return resp if isinstance(resp, str) else str(resp)
-    except Exception as e:
-        logging.exception("gemini_chat failed")
-        return ""
+# ---------------- Local reasoning (no external model, no API key) ----------------
+_STOPWORDS = {
+    "this", "that", "with", "from", "your", "have", "will", "into", "about",
+    "their", "there", "which", "would", "could", "should", "note", "notes",
+}
+
+def _local_complete(system: str, prompt: str) -> str:
+    """Deterministic workspace-only completion. Never opens a network call."""
+    system = system or ""
+    prompt = prompt or ""
+    snippet = " ".join(prompt.split())
+    wants_json = "strict JSON" in system or "JSON only" in system
+    if wants_json and "synthesis_position" in system:
+        return json.dumps({
+            "resolution": "Hold for a person to review. No external model was consulted.",
+            "conditions": ["A person ratifies this synthesis", "Evidence stays inside this workspace"],
+            "escalate": "YES",
+            "escalate_reason": "External model portals are disabled.",
+            "confidence": 0.45,
+            "synthesis_position": "DEFER",
+        })
+    if wants_json and "Cognitive Twin" in system:
+        title = "your latest note"
+        for line in prompt.splitlines():
+            if line.startswith("- ") and ":" in line:
+                title = line.split(":", 1)[0].lstrip("- ").strip() or title
+                break
+        return json.dumps({
+            "prediction": f"You would probably return to {title} before starting something new.",
+            "confidence": 0.42,
+            "counter_signal": "This is a local reading of stored titles, not an external model.",
+            "reasoning": "Reasoned only from notes and decisions already stored in this workspace.",
+        })
+    if wants_json:
+        return json.dumps({
+            "position": "UNCERTAIN",
+            "confidence": 0.5,
+            "risk_score": 0.4,
+            "reasoning": "Local review only. No external model or API key was used.",
+            "evidence": [snippet[:160] or "Workspace text only"],
+        })
+    if "comma-separated" in system:
+        words = []
+        seen = set()
+        for raw in prompt.replace("\n", " ").split():
+            word = raw.strip(".,;:!?()[]\"'").strip()
+            key = word.lower()
+            if len(word) < 4 or key in _STOPWORDS or key in seen:
+                continue
+            seen.add(key)
+            words.append(word)
+            if len(words) >= 6:
+                break
+        return ", ".join(words) or "captured thought"
+    if "starting with 'You'" in system or 'starting with "You"' in system:
+        return "\n".join([
+            "You keep decisions inside your own notes.",
+            "You prefer a traceable next step over a new external tool.",
+            "You revisit recent captures before expanding scope.",
+            "You treat missing links as the thing to fix next.",
+        ])
+    if "starting with '- '" in system or "bullet" in system.lower():
+        bits = [b.strip() for b in prompt.split(".") if b.strip()][:4]
+        return "\n".join(f"- {b[:140]}" for b in bits) or "- No additional local detail."
+    if "numbered list" in system.lower():
+        bits = [b.strip() for b in prompt.split(".") if b.strip()][:5]
+        return "\n".join(f"{i}. {b[:120]}" for i, b in enumerate(bits, 1)) or "1. Review the note."
+    if system.startswith("Rewrite"):
+        return snippet[:800]
+    return "Local review only. No external model or API key was used. " + snippet[:240]
+
+async def local_chat(system: str, prompt: str, session_id: str = None) -> str:
+    """Kept name for existing callers. Does not call a model provider."""
+    return _local_complete(system, prompt)
 
 async def llm_call(provider: str, model: str, system: str, prompt: str, session_id: str = None) -> str:
-    """Single-shot call to any provider (gemini/openai/anthropic)."""
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id or uid(),
-        system_message=system,
-    ).with_model(provider, model)
-    try:
-        resp = await chat.send_message(UserMessage(text=prompt))
-        return resp if isinstance(resp, str) else str(resp)
-    except Exception:
-        logging.exception(f"llm_call failed for {provider}/{model}")
-        return ""
+    """Kept signature for existing callers. Ignores provider and model. No API key."""
+    return _local_complete(system, prompt)
 
 async def extract_concepts(text: str) -> List[str]:
     system = "You extract key concepts from notes. Return ONLY a comma-separated list of 3-8 short concept phrases (2-4 words each). No numbering, no explanations."
-    out = await gemini_chat(system, text[:2000])
+    out = await local_chat(system, text[:2000])
     if not out:
         return []
     concepts = [c.strip().strip(".").strip('"').strip("'") for c in out.split(",") if c.strip()]
@@ -178,7 +225,7 @@ CONSENSUS_THRESHOLD = 0.5
 async def run_council(note_text: str) -> List[Dict[str, str]]:
     results = []
     for name, color, sys in AGENTS:
-        msg = await gemini_chat(sys, note_text[:1500], session_id=f"council-{name}")
+        msg = await local_chat(sys, note_text[:1500], session_id=f"council-{name}")
         results.append({"agent": name, "color_key": color, "response": msg or f"{name} could not respond right now."})
     return results
 
@@ -205,7 +252,7 @@ async def run_council_consensus(note_text: str) -> List[Dict[str, Any]]:
     results = []
     for name, color, _ in AGENTS:
         system = CONSENSUS_SYSTEMS[name]
-        raw = await gemini_chat(system, note_text[:1500], session_id=f"consensus-{name}")
+        raw = await local_chat(system, note_text[:1500], session_id=f"consensus-{name}")
         parsed = _parse_json_lenient(raw) or {}
         pos = str(parsed.get("position", "UNCERTAIN")).upper()
         if pos not in POSITION_WEIGHT:
@@ -989,10 +1036,10 @@ async def delete_account(user=Depends(get_current_user)):
     await db.users.delete_one({"id": uid_})
     return {"deleted": True, "user_id": uid_}
 
-# ---------------- Forgot Password (Emergent Resend) ----------------
-# Code-based password reset: user requests reset -> email with 6-digit code
-# (single-use, hashed at rest, 15-min expiry) -> user submits email+code+new
-# password -> password updated, code invalidated, ledger event appended.
+# ---------------- Forgot Password (in-app code, no mail portal) ----------------
+# Code-based password reset: user requests reset -> 6-digit code stored hashed
+# (single-use, 15-min expiry). No external mail API and no API key. The code is
+# returned only to the authenticated reset flow, never to a third-party sender.
 import re as _re
 import ipaddress as _ipaddress
 import secrets as _secrets
@@ -1000,10 +1047,7 @@ from html import escape as _html_escape
 from html.parser import HTMLParser as _HTMLParser
 from urllib.parse import urlparse as _urlparse
 
-EMAIL_BASE_URL = "https://integrations.emergentagent.com"  # constant per playbook — do NOT read from env
-EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "").strip()
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Pocket OS").strip() or "Pocket OS"
-EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
 
 # -- Guardrail gate (copy from playbook, keeps G2 + G3 enforceable in code) --
 _SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
@@ -1075,32 +1119,10 @@ def _assert_safe_email(subject: str, html: str) -> None:
                 raise ValueError(f"Anchor text {m.group(1)!r} != real link host {real!r} (G3)")
 
 async def send_email(*, to: str, subject: str, html: str, reply_to: Optional[str] = None) -> Optional[str]:
-    """Send a transactional email via Emergent Resend proxy. Gracefully no-ops
-    (logs + returns None) if EMERGENT_EMAIL_KEY is not configured — this lets
-    the reset flow work in preview and light up automatically once the
-    platform provisions the key at deploy time."""
+    """Validate the template, then refuse to send. No mail portal and no API key."""
     _assert_safe_email(subject, html)  # G2 + G3 gate, never skip
-    if not EMAIL_KEY:
-        logging.warning("send_email: EMERGENT_EMAIL_KEY not set — email to %s NOT sent. Subject: %s", to, subject)
-        return None
-    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
-    if reply_to or EMAIL_REPLY_TO:
-        payload["contact_email"] = reply_to or EMAIL_REPLY_TO
-    try:
-        async with httpx.AsyncClient(timeout=30) as client_:
-            resp = await client_.post(
-                f"{EMAIL_BASE_URL}/api/v1/email/send",
-                headers={"X-Email-Key": EMAIL_KEY},
-                json=payload,
-            )
-        resp.raise_for_status()
-        return (resp.json() or {}).get("id")
-    except httpx.HTTPStatusError as e:
-        logging.error("Email send failed: %s %s", e.response.status_code, e.response.text)
-        raise HTTPException(status_code=502, detail="Failed to send email")
-    except Exception:
-        logging.exception("Email send error")
-        raise HTTPException(status_code=500, detail="Failed to send email")
+    logging.warning("send_email: external mail portal disabled — email to %s NOT sent. Subject: %s", to, subject)
+    return None
 
 # -- Password reset code storage --
 RESET_CODE_TTL_MINUTES = 15
@@ -1142,7 +1164,7 @@ def _reset_email_body(code: str, display_name: str) -> tuple[str, str]:
     safe_app = _html_escape(EMAIL_FROM_NAME)
     html = (
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"'
-        ' style="background:#0b0f14;padding:32px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">'
+        ' style="background:#0b0f14;padding:32px 0;font-family:Geist,sans-serif">'
         '<tr><td align="center">'
         '<table role="presentation" width="100%" style="max-width:520px;background:#141a22;'
         'border-radius:16px;padding:32px" cellpadding="0" cellspacing="0"><tr><td>'
@@ -1201,7 +1223,7 @@ async def forgot_password(inp: ForgotPasswordIn):
     except HTTPException:
         # Do not leak email-provider failures; user sees generic response.
         email_id = None
-    logging.info("forgot_password: reset code issued for %s (email_id=%s, email_key_set=%s)", email, email_id, bool(EMAIL_KEY))
+    logging.info("forgot_password: reset code issued for %s (email_id=%s, external_mail=disabled)", email, email_id)
     return generic
 
 @api.post("/auth/reset-password")
@@ -1567,10 +1589,10 @@ async def debate_latest(note_id: str, user=Depends(get_current_user)):
 
 @api.post("/notes/{note_id}/council/debate")
 async def council_debate(note_id: str, user=Depends(get_current_user)):
-    """Run a full multi-turn Council Debate:
-      Turn 1: Claude Sonnet as Critic — argues against the majority verdict.
-      Turn 2: GPT-5.4 as Defender — steelmans the majority against the critic.
-      Turn 3: Gemini as Synthesizer — proposes a resolution (unratified).
+    """Run a full multi-turn Council Debate locally:
+      Turn 1: Critic — argues against the majority verdict.
+      Turn 2: Defender — steelmans the majority against the critic.
+      Turn 3: Synthesizer — proposes a resolution (unratified).
     Each turn is hashed and appended to the Ledger as its own event, and the
     final Synthesis Proposal awaits explicit Human Ratification."""
     n = await db.notes.find_one({"id": note_id, "user_id": user["id"]}, {"_id": 0})
@@ -1613,7 +1635,7 @@ async def council_debate(note_id: str, user=Depends(get_current_user)):
 
     turns: List[Dict[str, Any]] = []
 
-    # Turn 1 — Critic (Claude Sonnet 4.6)
+    # Turn 1 — local critic. No external model and no API key.
     critic_system = (
         "You are the Council Critic. The majority of specialized agents leaned toward "
         f"{majority}. In 2-3 short sentences, argue the STRONGEST case AGAINST the majority. "
@@ -1622,23 +1644,23 @@ async def council_debate(note_id: str, user=Depends(get_current_user)):
     )
     critic_prompt = f"NOTE:\n{note_block}\n\nAGENT VERDICTS:\n{positions_block}\n\nESCALATION TRIGGERS:\n{triggers_block}"
     critic_out = await llm_call(
-        "anthropic", "claude-sonnet-4-6", critic_system, critic_prompt,
+        "local", "pocket-os-local", critic_system, critic_prompt,
         session_id=f"debate-critic-{note_id}",
     )
     critic_hash = sha_of({"role": "critic", "argument": critic_out, "against": majority})
     turns.append({
-        "role": "critic", "provider": "anthropic", "model": "claude-sonnet-4-6",
+        "role": "critic", "provider": "local", "model": "pocket-os-local",
         "against": majority, "argument": critic_out or "(critic unavailable)",
         "argument_hash": critic_hash,
     })
     await log_event(
         user["id"], "debate_turn_critic",
-        f"Critic (Claude) argued against {majority}",
+        f"Critic argued against {majority}",
         ref_id=note_id,
         meta={"argument_hash": critic_hash, "consensus_id": consensus_id},
     )
 
-    # Turn 2 — Defender (GPT-5.4)
+    # Turn 2 — local defender. No external model and no API key.
     defender_system = (
         f"You are the Council Defender. The majority position was {majority}. A critic has just "
         "attacked that position. In 2-3 short sentences, steelman the majority: acknowledge the "
@@ -1650,23 +1672,23 @@ async def council_debate(note_id: str, user=Depends(get_current_user)):
         f"CRITIC ARGUMENT:\n{critic_out}\n\nESCALATION TRIGGERS:\n{triggers_block}"
     )
     defender_out = await llm_call(
-        "openai", "gpt-5.4", defender_system, defender_prompt,
+        "local", "pocket-os-local", defender_system, defender_prompt,
         session_id=f"debate-defender-{note_id}",
     )
     defender_hash = sha_of({"role": "defender", "argument": defender_out, "for": majority, "responds_to": critic_hash})
     turns.append({
-        "role": "defender", "provider": "openai", "model": "gpt-5.4",
+        "role": "defender", "provider": "local", "model": "pocket-os-local",
         "for": majority, "argument": defender_out or "(defender unavailable)",
         "responds_to": critic_hash, "argument_hash": defender_hash,
     })
     await log_event(
         user["id"], "debate_turn_defender",
-        f"Defender (GPT-5.4) steelmanned {majority}",
+        f"Defender steelmanned {majority}",
         ref_id=note_id,
         meta={"argument_hash": defender_hash, "responds_to": critic_hash, "consensus_id": consensus_id},
     )
 
-    # Turn 3 — Synthesizer (Gemini)
+    # Turn 3 — local synthesizer. No external model and no API key.
     synth_system = (
         "You are the Council Synthesizer. The critic and defender have finished. Produce a "
         "resolution as strict JSON only (no prose, no backticks) with keys:\n"
@@ -1682,7 +1704,7 @@ async def council_debate(note_id: str, user=Depends(get_current_user)):
         f"CRITIC:\n{critic_out}\n\nDEFENDER:\n{defender_out}\n\n"
         f"ESCALATION TRIGGERS:\n{triggers_block}"
     )
-    synth_raw = await gemini_chat(synth_system, synth_prompt, session_id=f"debate-synth-{note_id}")
+    synth_raw = await local_chat(synth_system, synth_prompt, session_id=f"debate-synth-{note_id}")
     parsed = _parse_json_lenient(synth_raw) or {}
     synthesis = {
         "resolution": str(parsed.get("resolution", ""))[:500],
@@ -1696,7 +1718,7 @@ async def council_debate(note_id: str, user=Depends(get_current_user)):
     }
     synth_argument_hash = sha_of({"role": "synthesizer", "synthesis": synthesis, "responds_to": [critic_hash, defender_hash]})
     turns.append({
-        "role": "synthesizer", "provider": "gemini", "model": "gemini-3-flash-preview",
+        "role": "synthesizer", "provider": "local", "model": "pocket-os-local",
         "argument": synth_raw or "(synthesizer unavailable)",
         "responds_to": [critic_hash, defender_hash],
         "argument_hash": synth_argument_hash,
@@ -2576,7 +2598,7 @@ async def run_operation(note_id: str, inp: OperationIn, user=Depends(get_current
     if not op:
         raise HTTPException(status_code=400, detail="Unknown command")
     system, label = op
-    out = await gemini_chat(system, n["text"][:2000], session_id=f"op-{inp.command}-{note_id}")
+    out = await local_chat(system, n["text"][:2000], session_id=f"op-{inp.command}-{note_id}")
     record = {
         "id": uid(),
         "note_id": note_id,
@@ -2596,20 +2618,18 @@ async def list_operations(note_id: str, user=Depends(get_current_user)):
     ops = await db.operations.find({"note_id": note_id, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(30)
     return ops
 
-# ---------------- Gemini Chat (multi-turn conversational) ----------------
+# ---------------- Local chat (no external model, no API key) ----------------
 CHAT_SYSTEM = (
     "You are Pocket OS, the user's cognitive assistant. Answer clearly and concisely. "
     "Use markdown lightly (bullets, bold) only when it improves clarity. "
     "When the user references their notes, decisions, or the graph, help them reason from their own history."
 )
 
-# Model registry: model_id -> provider
+# One local model. Vendor model ids are not offered, so old clients fall back here.
 MODEL_REGISTRY = {
-    "gemini-3-flash-preview": {"provider": "gemini", "label": "Gemini 3 Flash", "hint": "Fast · low cost"},
-    "gpt-5.4": {"provider": "openai", "label": "GPT-5.4", "hint": "Balanced"},
-    "claude-sonnet-4-6": {"provider": "anthropic", "label": "Claude Sonnet 4.6", "hint": "Best reasoning"},
+    "pocket-os-local": {"provider": "local", "label": "Local review", "hint": "Workspace only · no API key"},
 }
-DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = "pocket-os-local"
 
 class ChatSessionIn(BaseModel):
     title: Optional[str] = None
@@ -2724,7 +2744,6 @@ async def stream_chat_message(sid: str, inp: ChatMessageIn, user=Depends(get_cur
     model = session.get("model") or DEFAULT_MODEL
     if model not in MODEL_REGISTRY:
         model = DEFAULT_MODEL
-    provider = MODEL_REGISTRY[model]["provider"]
 
     # Load note context if bound
     note_ctx = None
@@ -2733,12 +2752,6 @@ async def stream_chat_message(sid: str, inp: ChatMessageIn, user=Depends(get_cur
 
     async def gen():
         yield f"data: {json.dumps({'type':'start','user_message_id':user_msg['id']})}\n\n"
-
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=sid,
-            system_message=CHAT_SYSTEM,
-        ).with_model(provider, model)
 
         preamble_parts = []
         if note_ctx:
@@ -2752,18 +2765,11 @@ async def stream_chat_message(sid: str, inp: ChatMessageIn, user=Depends(get_cur
             preamble_parts.append("Conversation so far:\n" + "\n".join(hist_lines) + "\n\n---\n\nNew user turn:\n")
         prompt = "".join(preamble_parts) + inp.text
 
-        full = ""
-        try:
-            async for ev in chat.stream_message(UserMessage(text=prompt)):
-                if isinstance(ev, TextDelta) and ev.content:
-                    full += ev.content
-                    yield f"data: {json.dumps({'type':'delta','content':ev.content})}\n\n"
-                elif isinstance(ev, StreamDone):
-                    break
-        except Exception as e:
-            err = str(e)[:200]
-            yield f"data: {json.dumps({'type':'error','error':err})}\n\n"
-            full = full or "(Chat model returned an error. Please try again.)"
+        full = _local_complete(CHAT_SYSTEM, prompt)
+        step = 48
+        for i in range(0, len(full), step):
+            chunk = full[i:i + step]
+            yield f"data: {json.dumps({'type':'delta','content':chunk})}\n\n"
 
         assistant_id = uid()
         await db.chat_messages.insert_one({
@@ -3320,7 +3326,7 @@ async def shadow(user=Depends(get_current_user)):
     sample = "\n".join(f"- {n['title']}" for n in notes[:15])
     system = "You infer HOW a person thinks from their notes. Not what they know — HOW they decide, structure ideas, and work. Return 4 short second-person observations, each on its own line, starting with 'You'. No numbers, no bullets."
     prompt = f"Notes:\n{sample}\n\nDecisions preserved: {decisions_count}."
-    out = await gemini_chat(system, prompt, session_id=f"shadow-{user['id']}")
+    out = await local_chat(system, prompt, session_id=f"shadow-{user['id']}")
     insights = [l.strip("-• ").strip() for l in (out or "").split("\n") if l.strip().lower().startswith("you")][:4]
     if not insights:
         insights = ["You capture ideas frequently but link them slowly.", "You prefer structured architecture over ad-hoc solutions."]
@@ -3368,7 +3374,7 @@ async def twin_predict(inp: TwinQuery, user=Depends(get_current_user)):
         "Never invent history that isn't in the provided context."
     )
     prompt = f"Question: {inp.question}\n\nHistory:\n{ctx}"
-    out = await gemini_chat(system, prompt, session_id=f"twin-{user['id']}")
+    out = await local_chat(system, prompt, session_id=f"twin-{user['id']}")
     parsed = _parse_json_lenient(out) or {}
     prediction = str(parsed.get("prediction") or out or "").strip()[:400]
     if not prediction:
@@ -3478,7 +3484,7 @@ async def seed_demo(user=Depends(get_current_user)):
     # Seed decisions
     demo_decisions = [
         ("Adopt event-sourced timeline", "All actions become chronological events."),
-        ("Standardize on Gemini 3 Flash for extraction", "Fast, cheap, structured."),
+        ("Keep extraction inside the workspace", "No external model and no API key."),
         ("Governance layer before Agent Marketplace", "Sandbox first, publish later."),
     ]
     for i, (dt, dc) in enumerate(demo_decisions):

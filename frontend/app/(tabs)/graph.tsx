@@ -1,9 +1,12 @@
 import React, { useCallback, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useAuth, api } from "@/src/lib/auth";
-import { colors, spacing, radius, fs } from "@/src/theme";
+import { colors, spacing, radius, fs, fonts } from "@/src/theme";
+import GlassBar from "@/src/components/GlassBar";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, { useAnimatedStyle, useSharedValue } from "react-native-reanimated";
 import GraphCanvas from "@/src/components/GraphCanvas";
 import { useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,6 +29,13 @@ export default function GraphScreen() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const panX = useSharedValue(0);
+  const panY = useSharedValue(0);
+  const savedX = useSharedValue(0);
+  const savedY = useSharedValue(0);
   const [selected, setSelected] = useState<Node | null>(null);
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
@@ -33,9 +43,12 @@ export default function GraphScreen() {
 
   const load = useCallback(async () => {
     if (!token) return;
+    setError(null);
     try {
       const g = await api<{ nodes: Node[]; edges: Edge[] }>("/api/graph", { token });
       setNodes(g.nodes); setEdges(g.edges);
+    } catch {
+      setError("Unable to load graph");
     } finally { setLoading(false); }
   }, [token]);
 
@@ -53,6 +66,27 @@ export default function GraphScreen() {
   };
 
   const canvasH = 480;
+  const gesture = Gesture.Simultaneous(
+    Gesture.Pan()
+      .onUpdate((e) => {
+        panX.value = savedX.value + e.translationX;
+        panY.value = savedY.value + e.translationY;
+      })
+      .onEnd(() => {
+        savedX.value = panX.value;
+        savedY.value = panY.value;
+      }),
+    Gesture.Pinch()
+      .onUpdate((e) => {
+        scale.value = Math.min(3, Math.max(0.6, savedScale.value * e.scale));
+      })
+      .onEnd(() => {
+        savedScale.value = scale.value;
+      }),
+  );
+  const canvasStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: panX.value }, { translateY: panY.value }, { scale: scale.value }],
+  }));
   const noteCount = nodes.filter(n => n.kind === "note").length;
   const conceptCount = nodes.filter(n => n.kind === "concept").length;
 
@@ -71,20 +105,38 @@ export default function GraphScreen() {
         ) : null}
       </View>
       <View style={styles.canvasWrap}>
-        {loading ? <ActivityIndicator color={colors.onSurface} style={{ marginTop: 40 }} /> : (
-          <GraphCanvas
-            nodes={nodes}
-            edges={edges}
-            width={width - spacing.xl * 2}
-            height={canvasH}
-            selectedId={selected?.id}
-            onNodePress={(n) => selectNode(n)}
-          />
+        {loading ? <ActivityIndicator color={colors.onSurface} style={{ marginTop: 40 }} /> : error ? (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.sub}>{error}</Text>
+            <Pressable style={styles.retry} onPress={() => { setLoading(true); load(); }} testID="graph-retry"><Text style={styles.retryT}>Reload</Text></Pressable>
+          </View>
+        ) : nodes.length === 0 ? (
+          <View style={styles.emptyWrap}>
+            <Image
+              source={{ uri: "https://images.pexels.com/photos/12732218/pexels-photo-12732218.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940" }}
+              style={styles.emptyImg}
+              accessibilityLabel="Abstract white geometric shapes"
+            />
+            <Text style={styles.sub}>No connections yet.</Text>
+          </View>
+        ) : (
+          <GestureDetector gesture={gesture}>
+            <Animated.View style={canvasStyle}>
+              <GraphCanvas
+                nodes={nodes}
+                edges={edges}
+                width={width - spacing.xl * 2}
+                height={canvasH}
+                selectedId={selected?.id}
+                onNodePress={(n) => selectNode(n)}
+              />
+            </Animated.View>
+          </GestureDetector>
         )}
       </View>
 
       {selected ? (
-        <View style={styles.sheet} testID="graph-detail-sheet">
+        <GlassBar style={styles.sheet} testID="graph-detail-sheet">
           <View style={styles.sheetHandle} />
           <View style={styles.sheetHead}>
             <View style={[styles.kindDot, { backgroundColor: selected.kind === "note" ? colors.onSurface : colors.agentPlanner }]} />
@@ -154,7 +206,7 @@ export default function GraphScreen() {
               ) : null}
             </>
           ) : null}
-        </View>
+        </GlassBar>
       ) : (
         <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 140 }}>
           <Text style={styles.listH}>Top concepts</Text>
@@ -205,7 +257,11 @@ const styles = StyleSheet.create({
   openT: { color: "#fff", fontWeight: "700", fontSize: fs.sm },
   sheetGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginTop: spacing.md },
   sheetMetric: { flexBasis: "22%", flexGrow: 1, backgroundColor: "#fff", padding: spacing.sm, borderRadius: radius.sm, alignItems: "center" },
-  sheetVal: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface },
+  sheetVal: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, fontFamily: fonts.mono },
+  emptyWrap: { alignItems: "center", gap: spacing.md, paddingTop: spacing.xl },
+  emptyImg: { width: "100%", height: 180, borderRadius: radius.lg },
+  retry: { backgroundColor: colors.onSurface, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8 },
+  retryT: { color: "#fff", fontWeight: "700" },
   sheetLab: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
   neighH: { fontSize: fs.sm, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5, marginTop: spacing.md, marginBottom: spacing.sm },
   neighChip: { backgroundColor: "#fff", borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: colors.border },

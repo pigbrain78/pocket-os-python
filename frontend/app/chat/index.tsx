@@ -49,7 +49,7 @@ export default function ChatIndex() {
         contentContainerStyle={styles.s}
         refreshControl={<RefreshControl refreshing={refresh} onRefresh={async () => { setRefresh(true); await load(); setRefresh(false); }} />}
       >
-        <Text style={styles.tag}>GEMINI 3 FLASH · MULTI-TURN</Text>
+        <Text style={styles.tag}>LOCAL REVIEW · NO API KEY</Text>
         <Text style={styles.h1}>Chat with Pocket OS.</Text>
         <Text style={styles.sub}>Streaming, conversational, remembers this thread.</Text>
 

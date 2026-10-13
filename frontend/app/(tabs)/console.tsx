@@ -4,7 +4,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth, api } from "@/src/lib/auth";
-import { colors, spacing, radius, fs } from "@/src/theme";
+import { colors, spacing, radius, fs, fonts } from "@/src/theme";
 import Ring from "@/src/components/Ring";
 
 type Console = {
@@ -200,9 +200,9 @@ export default function ConsoleScreen() {
 
         <Pressable style={styles.govCta} onPress={() => router.push("/chat")} testID="open-chat-btn">
           <View style={{ flex: 1 }}>
-            <Text style={styles.govLab}>GEMINI 3 FLASH</Text>
-            <Text style={styles.govTitle}>AI Chat</Text>
-            <Text style={styles.govSub}>Streaming multi-turn conversation.</Text>
+            <Text style={styles.govLab}>LOCAL REVIEW</Text>
+            <Text style={styles.govTitle}>Chat</Text>
+            <Text style={styles.govSub}>Workspace-only. No external model.</Text>
           </View>
           <Ionicons name="chatbubbles-outline" size={28} color={colors.onSurface} />
         </Pressable>
@@ -248,11 +248,11 @@ const styles = StyleSheet.create({
   oppSuggest: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
   brainCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.xl, marginTop: spacing.md, gap: spacing.md },
   brainLab: { color: colors.muted, fontSize: fs.sm, textTransform: "uppercase", letterSpacing: 0.5 },
-  brainVal: { fontSize: fs["4xl"], fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  brainVal: { fontSize: fs["4xl"], fontWeight: "800", color: colors.onSurface, marginTop: 2, fontFamily: fonts.mono },
   brainSub: { color: colors.onSurfaceTertiary, fontSize: fs.sm, marginTop: 4 },
   grid: { flexDirection: "row", flexWrap: "wrap", marginTop: spacing.lg, gap: spacing.md },
   tile: { flexBasis: "47%", flexGrow: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.lg, gap: 4 },
-  tileVal: { fontSize: fs["2xl"], fontWeight: "800", color: colors.onSurface, marginTop: spacing.xs },
+  tileVal: { fontSize: fs["2xl"], fontWeight: "800", color: colors.onSurface, marginTop: spacing.xs, fontFamily: fonts.mono },
   tileLab: { color: colors.muted, fontSize: fs.sm },
   focusCard: { backgroundColor: colors.onSurface, borderRadius: radius.lg, padding: spacing.xl, marginTop: spacing.lg },
   focusRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
@@ -265,7 +265,7 @@ const styles = StyleSheet.create({
   pocketH: { fontSize: fs.xl, fontWeight: "800", color: colors.onSurface, marginBottom: spacing.md },
   pocketRow: { flexDirection: "row", justifyContent: "space-between", marginTop: spacing.md },
   pocketMetric: { flex: 1 },
-  pocketVal: { fontSize: fs["2xl"], fontWeight: "800", color: colors.onSurface },
+  pocketVal: { fontSize: fs["2xl"], fontWeight: "800", color: colors.onSurface, fontFamily: fonts.mono },
   pocketLab: { fontSize: fs.sm, color: colors.muted, marginTop: 2 },
   compoundBar: { marginTop: spacing.lg, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   compoundLab: { color: colors.onSurfaceSecondary, fontSize: fs.base },
@@ -283,7 +283,7 @@ const styles = StyleSheet.create({
   verifyPill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
   verifyT: { fontSize: 10, fontWeight: "700" },
   ledgerHead2: { color: "#8E8E93", fontSize: fs.sm, marginTop: spacing.sm },
-  ledgerHash: { color: "#7BE38B", fontFamily: "monospace", fontSize: 12, marginTop: 4 },
+  ledgerHash: { color: "#7BE38B", fontFamily: fonts.mono, fontSize: 12, marginTop: 4 },
   ledgerMeta: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: "#222" },
   ledgerMetaT: { color: "#B8B8BD", fontSize: fs.sm },
 });

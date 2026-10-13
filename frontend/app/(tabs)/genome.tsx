@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, ActivityIndicator, TextInput, Press
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useAuth, api } from "@/src/lib/auth";
-import { colors, spacing, radius, fs } from "@/src/theme";
+import { colors, spacing, radius, fs, fonts } from "@/src/theme";
 import { Ionicons } from "@expo/vector-icons";
 
 type Shadow = { insights: string[]; top_patterns: { label: string; weight: number }[]; kind?: string; description?: string };
@@ -19,12 +19,24 @@ export default function GenomeScreen() {
   const [question, setQuestion] = useState("What would I probably build next?");
   const [answer, setAnswer] = useState<TwinResp | null>(null);
   const [busy, setBusy] = useState(false);
+  const [roi, setRoi] = useState({ projects: 0, tasks: 0, articles: 0, proposals: 0 });
 
   const loadShadow = useCallback(async () => {
     if (!token) return;
     // Load DNA immediately (fast, no LLM)
     api<DNA>("/api/cognitive-dna", { token }).then(setDna).catch(() => {});
-    // Shadow can be slow (Gemini)
+    api<{ produced_projects?: number; produced_tasks?: number; produced_articles?: number; produced_proposals?: number }[]>("/api/notes", { token })
+      .then((notes) => {
+        const list = Array.isArray(notes) ? notes : [];
+        setRoi({
+          projects: list.reduce((n, x) => n + (x.produced_projects || 0), 0),
+          tasks: list.reduce((n, x) => n + (x.produced_tasks || 0), 0),
+          articles: list.reduce((n, x) => n + (x.produced_articles || 0), 0),
+          proposals: list.reduce((n, x) => n + (x.produced_proposals || 0), 0),
+        });
+      })
+      .catch(() => {});
+    // Shadow is local and does not call an external model.
     api<Shadow>("/api/shadow", { token }).then(setShadow).catch(() => {});
   }, [token]);
   useFocusEffect(useCallback(() => { loadShadow(); }, [loadShadow]));
@@ -117,12 +129,27 @@ export default function GenomeScreen() {
             )}
           </View>
 
+          <View style={styles.roi}>
+            <Text style={styles.sh}>Knowledge ROI</Text>
+            {[
+              ["Projects", roi.projects],
+              ["Tasks", roi.tasks],
+              ["Articles", roi.articles],
+              ["Proposals", roi.proposals],
+            ].map(([label, val]) => (
+              <View key={String(label)} style={styles.roiRow}>
+                <Text style={styles.roiLab}>{label}</Text>
+                <Text style={styles.roiVal}>{val}</Text>
+              </View>
+            ))}
+          </View>
+
           <View style={styles.twin}>
             <View style={styles.rowBetween}>
               <Text style={styles.twinH}>Cognitive Twin</Text>
               <View style={styles.kindPillDark}><Text style={styles.kindPillDarkT}>MODEL PREDICTION</Text></View>
             </View>
-            <Text style={styles.descLight}>Ask what YOU would probably do next — reasoned from your history.</Text>
+            <Text style={[styles.descLight, styles.centerCopy]}>What you would probably do next</Text>
             <TextInput
               value={question}
               onChangeText={setQuestion}
@@ -183,7 +210,7 @@ const styles = StyleSheet.create({
   subLab: { fontSize: fs.sm, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
   pat: { backgroundColor: "#fff", borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 4 },
   patT: { color: colors.onSurface, fontSize: fs.sm, fontWeight: "600" },
-  twin: { backgroundColor: colors.onSurface, borderRadius: radius.lg, padding: spacing.xl, marginTop: spacing.md },
+  twin: { backgroundColor: colors.onSurface, borderRadius: radius.lg, padding: spacing["2xl"], marginTop: spacing.md, alignItems: "stretch" },
   twinH: { color: "#fff", fontSize: fs.xl, fontWeight: "800" },
   q: { backgroundColor: "#111", color: "#fff", padding: spacing.md, borderRadius: radius.md, marginTop: spacing.md, minHeight: 60, fontSize: fs.base, textAlignVertical: "top" },
   askBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: "#fff", padding: spacing.md, borderRadius: radius.md, marginTop: spacing.md },
@@ -201,8 +228,13 @@ const styles = StyleSheet.create({
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   descMuted: { color: colors.muted, fontSize: fs.sm, marginTop: 2 },
   descLight: { color: "#B8B8BD", fontSize: fs.base, marginTop: 4 },
-  kindPill: { backgroundColor: "#E8F0FF", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
-  kindPillT: { color: "#1A4FA3", fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  centerCopy: { textAlign: "center", fontSize: fs.xl, color: "#fff", marginTop: spacing.lg, marginBottom: spacing.sm },
+  kindPill: { backgroundColor: colors.surface, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  kindPillT: { color: colors.onSurface, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  roi: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing["2xl"], gap: spacing.md },
+  roiRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+  roiLab: { color: colors.onSurface, fontSize: fs.base },
+  roiVal: { color: colors.onSurface, fontSize: fs.xl, fontWeight: "800", fontFamily: fonts.mono },
   kindPillDark: { backgroundColor: "#333", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
   kindPillDarkT: { color: "#7BE38B", fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
   traitMetaRow: { flexDirection: "row", gap: 12, marginTop: 4, flexWrap: "wrap" },

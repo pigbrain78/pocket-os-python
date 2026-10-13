@@ -1,12 +1,12 @@
 """
-Test suite for Forgot Password flow (Emergent Resend integration).
+Test suite for Forgot Password flow (in-app code, no external mail portal).
 
 Coverage:
 - POST /api/auth/forgot-password (known/unknown emails, enumeration-safety, rate-limit)
 - POST /api/auth/reset-password (all rejection paths, success path, ledger event)
 - login with new password after reset (and old password fails)
 - _assert_safe_email guardrail (rejects unsafe HTML, allows real template)
-- send_email helper (no-ops when EMERGENT_EMAIL_KEY empty; posts when set)
+- send_email helper never posts and never attaches an API key
 - Regression: /api/auth/admin/reset-password still works (503/401/200)
 """
 import os
@@ -424,68 +424,30 @@ class TestEmailGuardrail:
 # 5. send_email helper
 # =========================================================================
 class TestSendEmailHelper:
-    def test_no_op_when_key_empty(self, caplog):
-        """With EMERGENT_EMAIL_KEY empty, send_email logs a warning and returns None."""
-        # Ensure key is empty at module level
-        original = server.EMAIL_KEY
-        server.EMAIL_KEY = ""
+    def test_never_posts_and_never_reads_a_key(self, caplog):
+        """Mail stays local. A present or absent key must not create an outbound post."""
+        import logging
+        caplog.set_level(logging.WARNING)
+        called = {"post": 0}
+        original_post = server.httpx.AsyncClient.post
+
+        async def _boom(self, *a, **kw):
+            called["post"] += 1
+            raise AssertionError("send_email must not open an HTTP client")
+
+        server.httpx.AsyncClient.post = _boom
         try:
-            import logging
-            caplog.set_level(logging.WARNING)
             result = _run(server.send_email(
                 to="foo@bar.com",
                 subject="Test subject",
                 html="<p>hello</p>",
             ))
             assert result is None
-            assert any(
-                "EMERGENT_EMAIL_KEY not set" in rec.message
-                for rec in caplog.records
-            )
+            assert called["post"] == 0
+            assert not hasattr(server, "EMAIL_KEY")
+            assert any("external mail portal disabled" in rec.message for rec in caplog.records)
         finally:
-            server.EMAIL_KEY = original
-
-    def test_posts_to_emergent_proxy_when_key_set(self):
-        """When EMAIL_KEY is set, POSTs to the correct URL with X-Email-Key header + from_name."""
-        original = server.EMAIL_KEY
-        server.EMAIL_KEY = "test-fake-key-1234"
-
-        captured = {}
-
-        class _FakeResp:
-            def raise_for_status(self):
-                return None
-            def json(self):
-                return {"id": "email-abc-123"}
-
-        class _FakeAsyncClient:
-            def __init__(self, *a, **kw):
-                pass
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *a):
-                return None
-            async def post(self, url, headers=None, json=None):
-                captured["url"] = url
-                captured["headers"] = headers or {}
-                captured["json"] = json or {}
-                return _FakeResp()
-
-        try:
-            with patch.object(server.httpx, "AsyncClient", _FakeAsyncClient):
-                result = _run(server.send_email(
-                    to="foo@bar.com",
-                    subject="Test",
-                    html="<p>hi</p>",
-                ))
-            assert result == "email-abc-123"
-            assert captured["url"] == "https://integrations.emergentagent.com/api/v1/email/send"
-            assert captured["headers"].get("X-Email-Key") == "test-fake-key-1234"
-            assert captured["json"].get("from_name") == server.EMAIL_FROM_NAME
-            assert captured["json"].get("to") == ["foo@bar.com"]
-            assert captured["json"].get("subject") == "Test"
-        finally:
-            server.EMAIL_KEY = original
+            server.httpx.AsyncClient.post = original_post
 
 
 # =========================================================================
