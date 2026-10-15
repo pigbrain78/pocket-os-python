@@ -1,6 +1,5 @@
 import asyncio
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from packages.gateway.mcp_firewall.interceptor import MCPConstitutionalFirewall
